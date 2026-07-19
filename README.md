@@ -79,3 +79,7 @@ See `adsb-volume.service` (a systemd **user** unit):
 
 It can run on any host that can reach your Ultrafeeder — irok, skyscanner
 itself, wherever. Edit `ADSB_ULTRAFEEDER` in the unit if you move it.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
