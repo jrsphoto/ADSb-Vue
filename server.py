@@ -46,7 +46,8 @@ STEP = CELL_NM / NM_PER_DEG  # de-dup grid step in degrees
 
 _recv = {"lat": None, "lon": None}
 _cache = {"ts": 0.0, "data": None}
-_lock = threading.Lock()
+_cache_lock = threading.Lock()   # guards the (fast) cache read/write only
+_build_lock = threading.Lock()   # single-flights the (slow) rebuild
 
 
 def _fetch(url, timeout=20):
@@ -73,17 +74,24 @@ def receiver():
     return _recv["lat"], _recv["lon"]
 
 
-def bearing_distance(rlat, rlon, alat, alon):
-    """Initial bearing (deg, 0=N) and great-circle distance (nm)."""
-    p1, p2 = math.radians(rlat), math.radians(alat)
-    dlon = math.radians(alon - rlon)
+def bearing_distance(sin1, cos1, rlat_r, rlon_r, alat, alon):
+    """Initial bearing (deg, 0=N) and great-circle distance (nm).
+
+    The receiver terms (sin/cos of its latitude, its lat/lon in radians) are
+    constant across a run, so they're computed once by the caller and passed in
+    rather than recomputed per aircraft row.
+    """
+    p2 = math.radians(alat)
+    dlon = math.radians(alon) - rlon_r
+    cos2 = math.cos(p2)
+    cosd = math.cos(dlon)
     # bearing
-    y = math.sin(dlon) * math.cos(p2)
-    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dlon)
+    y = math.sin(dlon) * cos2
+    x = cos1 * math.sin(p2) - sin1 * cos2 * cosd
     brg = (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
     # distance (haversine) in nm
-    dlat = p2 - p1
-    a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlon / 2) ** 2
+    dlat = p2 - rlat_r
+    a = math.sin(dlat / 2) ** 2 + cos1 * cos2 * math.sin(dlon / 2) ** 2
     dist_deg = math.degrees(2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
     return brg, dist_deg * NM_PER_DEG
 
@@ -97,6 +105,9 @@ def _alt_ft(v):
 def build_points():
     """Read all recent-history chunks and return the cone payload."""
     rlat, rlon = receiver()
+    # Receiver terms are constant for the whole run — compute once, not per row.
+    rlat_r, rlon_r = math.radians(rlat), math.radians(rlon)
+    sin1, cos1 = math.sin(rlat_r), math.cos(rlat_r)
     idx = _fetch_json(ULTRAFEEDER + "/chunks/chunks.json")
     names = idx.get("chunks", [])
     if MAX_CHUNKS > 0:
@@ -132,7 +143,7 @@ def build_points():
                 if key in seen:
                     continue
                 seen.add(key)
-                brg, dist = bearing_distance(rlat, rlon, lat, lon)
+                brg, dist = bearing_distance(sin1, cos1, rlat_r, rlon_r, lat, lon)
                 if dist > 400:      # discard obvious bad positions
                     continue
                 points.append([round(brg, 1), round(dist, 2), int(alt)])
@@ -157,13 +168,24 @@ def build_points():
 
 
 def get_cone(refresh=False):
-    with _lock:
-        now = time.time()
-        if not refresh and _cache["data"] and (now - _cache["ts"]) < CACHE_SECS:
-            return _cache["data"]
+    # Fast path: return a fresh cache hit without ever waiting on a rebuild.
+    with _cache_lock:
+        data, ts = _cache["data"], _cache["ts"]
+    if data is not None and not refresh and (time.time() - ts) < CACHE_SECS:
+        return data
+
+    # Slow path: only one thread rebuilds at a time. Others block here, then the
+    # double-check below lets them ride the just-built result instead of
+    # rebuilding again (single-flight). The expensive work is OUTSIDE the cache
+    # lock, so concurrent cache-hit readers are never blocked by it.
+    with _build_lock:
+        with _cache_lock:
+            data, ts = _cache["data"], _cache["ts"]
+        if data is not None and not refresh and (time.time() - ts) < CACHE_SECS:
+            return data
         data = build_points()
-        _cache["data"] = data
-        _cache["ts"] = now
+        with _cache_lock:
+            _cache["data"], _cache["ts"] = data, time.time()
         return data
 
 
