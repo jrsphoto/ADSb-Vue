@@ -1,8 +1,8 @@
-# adsb-volume — tiny zero-dependency image (Python stdlib only)
+# ADSb-Vue — tiny zero-dependency image (Python stdlib only)
 FROM python:3.12-alpine
 
 WORKDIR /app
-COPY server.py index.html ./
+COPY server.py index.html adsbvue_favicon.png ./
 
 ENV ADSB_ULTRAFEEDER=http://127.0.0.1 \
     ADSB_PORT=24556

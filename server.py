@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-adsb-volume — a standalone 3D volumetric antenna-reception viewer for an
+ADSb-Vue — a standalone 3D volumetric antenna-reception viewer for an
 Ultrafeeder / tar1090 ADS-B receiver.
 
 It reads tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
@@ -13,7 +13,7 @@ shell.
 Zero third-party dependencies — Python 3 standard library only.
 
 Config via environment variables:
-  ADSB_ULTRAFEEDER   base URL of the tar1090 instance   (default http://10.20.40.12)
+  ADSB_ULTRAFEEDER   base URL of the tar1090 instance   (default http://127.0.0.1)
   ADSB_RECV_LAT      receiver latitude   (default: auto from /data/receiver.json)
   ADSB_RECV_LON      receiver longitude  (default: auto from /data/receiver.json)
   ADSB_PORT          port to listen on   (default 24556)
@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-ULTRAFEEDER = os.environ.get("ADSB_ULTRAFEEDER", "http://10.20.40.12").rstrip("/")
+ULTRAFEEDER = os.environ.get("ADSB_ULTRAFEEDER", "http://127.0.0.1").rstrip("/")
 PORT = int(os.environ.get("ADSB_PORT", "24556"))
 CACHE_SECS = int(os.environ.get("ADSB_CACHE_SECS", "120"))
 MAX_CHUNKS = int(os.environ.get("ADSB_MAX_CHUNKS", "48"))      # newest-first, 0=all
@@ -52,7 +52,7 @@ _build_lock = threading.Lock()   # single-flights the (slow) rebuild
 
 
 def _fetch(url, timeout=20):
-    req = urllib.request.Request(url, headers={"User-Agent": "adsb-volume/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "ADSb-Vue/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
@@ -233,6 +233,15 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/", "/view", "/index.html"):
                 with open(os.path.join(HERE, "index.html"), "rb") as fh:
                     self._send(200, fh.read(), "text/html; charset=utf-8")
+            elif path in ("/adsbvue_favicon.png", "/favicon.ico", "/adsbvue_logo.jpg"):
+                name = "adsbvue_logo.jpg" if path.endswith(".jpg") else "adsbvue_favicon.png"
+                fp = os.path.join(HERE, name)
+                if os.path.exists(fp):
+                    with open(fp, "rb") as fh:
+                        ct = "image/jpeg" if name.endswith(".jpg") else "image/png"
+                        self._send(200, fh.read(), ct, gz_ok=False)
+                else:
+                    self._send(404, b"", "application/octet-stream")
             elif path in ("/cone", "/data"):
                 snap = _ensure("refresh=true" in query)
                 # Pre-serialized + pre-gzipped at build time; just write the bytes.
@@ -275,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    print("adsb-volume  ultrafeeder=%s  port=%d" % (ULTRAFEEDER, PORT))
+    print("ADSb-Vue  ultrafeeder=%s  port=%d" % (ULTRAFEEDER, PORT))
     try:
         rlat, rlon = receiver()
         print("receiver: %.6f, %.6f" % (rlat, rlon))

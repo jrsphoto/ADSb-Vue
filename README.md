@@ -1,4 +1,8 @@
-# adsb-volume
+<p align="center">
+  <img src="adsbvue_logo.jpg" alt="ADSb-Vue — 3D Reception Volume & Analytics" width="640">
+</p>
+
+# ADSb-Vue
 
 A standalone **3D volumetric view of your ADS-B antenna reception**, driven by an
 Ultrafeeder / tar1090 receiver. Inspired by the "detection cone" viewer, but with
@@ -36,7 +40,7 @@ your Ultrafeeder on the LAN.)
 
 | Var                | Default              | Meaning                                   |
 |--------------------|----------------------|-------------------------------------------|
-| `ADSB_ULTRAFEEDER` | `http://10.20.40.12` | Base URL of your tar1090 instance         |
+| `ADSB_ULTRAFEEDER` | `http://127.0.0.1`   | Base URL of your tar1090 instance         |
 | `ADSB_PORT`        | `24556`              | Port to listen on                         |
 | `ADSB_RECV_LAT`    | auto                 | Receiver latitude (else `/data/receiver.json`) |
 | `ADSB_RECV_LON`    | auto                 | Receiver longitude                        |
@@ -49,36 +53,43 @@ Reading is coarse on purpose: this is a coverage map, not a traffic replay.
 Raise `ADSB_MAX_CHUNKS` (e.g. `0`) for the fullest envelope at the cost of a
 bigger payload and slower first load; lower `ADSB_CELL_NM` for finer detail.
 
+## Customizing the map
+
+State borders and lakes are drawn automatically and the home state(s) are
+highlighted based on your receiver's position — no editing needed. The labelled
+**cities** are a short example list near the top of `index.html` (`const CITIES`,
+`[label, lat, lon]`); the default set is upper-Midwest US, so swap in cities near
+your own receiver.
+
 ## Endpoints
 
 - `GET /`        — the 3D viewer page
 - `GET /cone`    — observations as JSON (`?refresh=true` bypasses the cache)
 - `GET /health`  — liveness
 
-## Run on skyscanner via Docker (recommended)
+## Run via Docker (recommended)
 
-Co-located with Ultrafeeder, always-on, near-zero impact. Copy this directory to
-`skyscanner:/opt/adsbvue` and:
+Easiest on the same host that runs Ultrafeeder — co-located, always-on,
+near-zero impact. From a clone of this repo on that host:
 
-    cd /opt/adsbvue
     docker compose up -d --build
 
-Then open `http://feeder.example:24556/`. Host networking lets the
-container read tar1090 at `127.0.0.1:80` and serve the viewer on the host's
-`:24556`. See `docker-compose.yml` for the bridge-networking alternative.
+Then open `http://<host>:24556/`. Host networking lets the container read
+tar1090 at `127.0.0.1:80` and serve the viewer on the host's `:24556`. To run it
+somewhere else, use bridge networking and set `ADSB_ULTRAFEEDER` to your tar1090
+host — see `docker-compose.yml`.
 
 ## Run as a service
 
-See `adsb-volume.service` (a systemd **user** unit):
+See `adsbvue.service` (a systemd **user** unit — adjust the path and
+`ADSB_ULTRAFEEDER` inside it first):
 
-    cp adsb-volume.service ~/.config/systemd/user/
+    cp adsbvue.service ~/.config/systemd/user/
     systemctl --user daemon-reload
-    systemctl --user enable --now adsb-volume
-    # persist across logout (already enabled on irok):
-    loginctl enable-linger "$USER"
+    systemctl --user enable --now adsbvue
+    loginctl enable-linger "$USER"   # keep it running across logout
 
-It can run on any host that can reach your Ultrafeeder — irok, skyscanner
-itself, wherever. Edit `ADSB_ULTRAFEEDER` in the unit if you move it.
+It can run on any host that can reach your Ultrafeeder.
 
 ## License
 

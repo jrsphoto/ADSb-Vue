@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>ADS-B Reception Volume</title>
+<title>ADSb-Vue — 3D Reception Volume</title>
+<link rel="icon" type="image/png" href="/adsbvue_favicon.png">
+<link rel="apple-touch-icon" href="/adsbvue_favicon.png">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: #06090f; overflow: hidden; font-family: 'SF Mono', Consolas, monospace; font-size: 12px; color: #7aaecc; }
@@ -106,7 +108,7 @@ input[type=range]::-moz-range-thumb {
 <button id="menuToggle" aria-label="Toggle controls">&#9776;</button>
 
 <div id="ui" style="display:none">
-  <h1>Reception Volume</h1>
+  <h1>ADSb-Vue</h1>
   <div id="meta"></div>
 
   <div class="sec">Render mode</div>
@@ -622,8 +624,13 @@ function wireUI() {
   });
 }
 
-// Geographic context: state borders (home states highlighted), lakes, and a
-// handful of regional cities for orientation. All vector, all optional.
+// Geographic context: state borders (home states auto-highlighted), lakes, and a
+// few labelled cities for orientation. All vector, all optional.
+//
+// EDIT THIS for your area: it's just [label, lat, lon] entries, and only those
+// within range of the receiver are drawn. The sample set below is around the
+// upper Midwest US; replace it with cities near your own receiver. (State
+// borders and lakes are global-ish and need no editing.)
 const CITIES = [
   ['MSP', 44.98, -93.27], ['Duluth', 46.79, -92.10], ['Rochester', 44.02, -92.48],
   ['Eau Claire', 44.81, -91.50], ['La Crosse', 43.81, -91.25], ['St Cloud', 45.56, -94.16],
