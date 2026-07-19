@@ -17,6 +17,9 @@ body { background: #06090f; overflow: hidden; font-family: 'SF Mono', Consolas, 
   min-width: 210px; backdrop-filter: blur(4px);
 }
 #ui h1 { font-size: 12px; font-weight: 500; color: #b0cee0; letter-spacing: 0.8px; text-transform: uppercase; }
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand img { width: 30px; height: 30px; border-radius: 6px; flex-shrink: 0; box-shadow: 0 0 0 1px #1a3a54; }
+#ui .brand h1 { text-transform: none; letter-spacing: 0.3px; font-size: 15px; }
 #meta { font-size: 10px; color: #2a5a74; line-height: 1.7; }
 .sec { font-size: 9px; color: #1e4258; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
 .btns { display: flex; flex-direction: column; gap: 5px; }
@@ -108,7 +111,7 @@ input[type=range]::-moz-range-thumb {
 <button id="menuToggle" aria-label="Toggle controls">&#9776;</button>
 
 <div id="ui" style="display:none">
-  <h1>ADSb-Vue</h1>
+  <div class="brand"><img src="/adsbvue_favicon.png" alt=""><h1>ADSb-Vue</h1></div>
   <div id="meta"></div>
 
   <div class="sec">Render mode</div>
