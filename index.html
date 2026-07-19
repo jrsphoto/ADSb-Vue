@@ -35,6 +35,20 @@ button.max.on   { border-color: hsl(296,85%,50%); }
 button.mode.on  { border-color: #3a7ac0; color: #cfe6f6; background: rgba(40,90,150,0.18); }
 button.view    { border-color: #1a3a54; color: #3a6a84; font-size: 10px; }
 button.view:hover { border-color: #2a5a7a; color: #5a8aaa; }
+.slider { display: flex; flex-direction: column; gap: 3px; }
+.slider label { font-size: 10px; color: #5a86a0; display: flex; justify-content: space-between; }
+.slider label b { color: #9fc6dd; font-weight: 500; }
+input[type=range] {
+  -webkit-appearance: none; appearance: none; width: 100%; height: 3px;
+  background: #14324a; border-radius: 3px; outline: none; cursor: pointer;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 12px; height: 12px;
+  border-radius: 50%; background: #4a90c8; border: 1px solid #7fb8e0;
+}
+input[type=range]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%; background: #4a90c8; border: 1px solid #7fb8e0;
+}
 #legend {
   position: fixed; bottom: 16px; left: 16px;
   background: rgba(6,9,15,0.75); border: 1px solid #0e2a40;
@@ -75,6 +89,18 @@ button.view:hover { border-color: #2a5a7a; color: #5a8aaa; }
     <button class="mode on" data-mode="voxel">&#9632; Density volume</button>
     <button class="mode"    data-mode="shell">&#9680; Detection cone</button>
     <button class="mode"    data-mode="points">&#8226; Point cloud</button>
+  </div>
+
+  <div class="sec" id="dispSec">Display</div>
+  <div class="btns" id="dispCtl">
+    <div class="slider">
+      <label>Solidity <b id="opVal">32%</b></label>
+      <input type="range" id="opacity" min="8" max="100" value="32">
+    </div>
+    <div class="slider">
+      <label>Smoothing <b id="smVal">medium</b></label>
+      <input type="range" id="smooth" min="0" max="100" value="50">
+    </div>
   </div>
 
   <div class="sec">Altitude bands</div>
@@ -133,6 +159,28 @@ let DATA = null;
 let modeGroup = null;                 // current render-mode object(s)
 let mode = 'voxel';
 const bands = { max: true, vhigh: true, high: true, mid: true, low: true };
+let displayOpacity = 0.32;   // 0..1 — "Solidity" slider (1 = solid object)
+let smoothing = 0.5;         // 0..1 — "Smoothing" slider
+
+// Push the current Solidity value onto the live geometry without a rebuild.
+// Roles are tagged on each material so fill/surface, wireframe and points each
+// react sensibly. Solid (high opacity) turns depth-writing on so it reads as a
+// real object; glassy (low opacity) turns it off so layers blend.
+function applyOpacity() {
+  if (!modeGroup) return;
+  const solid = displayOpacity > 0.82;
+  modeGroup.traverse(o => {
+    const m = o.material; if (!m) return;
+    if (o.userData.role === 'wire') {          // wireframe only helps at the glassy end
+      m.opacity = 0.2 * Math.max(0, (0.5 - displayOpacity) / 0.5); m.visible = m.opacity > 0.02;
+    } else if (o.userData.role === 'points') {
+      m.opacity = Math.min(0.92, 0.25 + displayOpacity * 0.7);
+    } else {                                    // fill / voxel surface
+      m.opacity = displayOpacity; m.depthWrite = solid;
+    }
+    m.needsUpdate = true;
+  });
+}
 
 // ---- helpers ---------------------------------------------------------------
 function toXYZ(brg, dist, alt) {
@@ -176,8 +224,11 @@ function buildPoints(pts) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
-  g.add(new THREE.Points(geo, new THREE.PointsMaterial({
-    size: 0.9, vertexColors: true, transparent: true, opacity: 0.75 })));
+  const pm = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 0.9, vertexColors: true, transparent: true,
+    opacity: Math.min(0.92, 0.25 + displayOpacity * 0.7) }));
+  pm.userData.role = 'points';
+  g.add(pm);
   return g;
 }
 
@@ -185,8 +236,9 @@ function buildPoints(pts) {
 function buildVoxels(pts) {
   const g = new THREE.Group();
   if (!pts.length) return g;
-  const CELL = 7;          // nm, horizontal
-  const ALT_CELL = 2000;   // ft, vertical
+  // Smoothing coarsens the grid: bigger cells = blobbier, less jagged.
+  const CELL = 5 + smoothing * 6;       // nm, horizontal (5..11)
+  const ALT_CELL = 1500 + smoothing * 1500;  // ft, vertical (1500..3000)
   const cells = new Map();
   for (const [b, d, a] of pts) {
     const [x, , z] = toXYZ(b, d, a);
@@ -201,13 +253,16 @@ function buildVoxels(pts) {
   for (const c of cells.values()) if (c.n > maxN) maxN = c.n;
   const logMax = Math.log(maxN + 1);
 
-  const box = new THREE.BoxGeometry(CELL*0.9, ALT_CELL*ALT_SCALE*0.9, CELL*0.9);
-  // Normal alpha blending (NOT additive): overlapping translucent cells build
-  // up toward saturated colour where reception is dense, without blowing out
-  // to white the way additive does when thousands of boxes overlap.
-  const mat = new THREE.MeshBasicMaterial({
-    vertexColors: false, transparent: true, opacity: 0.28, depthWrite: false });
+  // Slightly overlap cells at high smoothing so the blocks merge into a blob.
+  const fill = 0.9 + smoothing * 0.35;
+  const box = new THREE.BoxGeometry(CELL*fill, ALT_CELL*ALT_SCALE*fill, CELL*fill);
+  // Lambert so the volume shades like a solid object when the Solidity slider is
+  // up. Normal alpha blending (NOT additive): overlapping translucent cells build
+  // up toward saturated colour where reception is dense, without blowing to white.
+  const mat = new THREE.MeshLambertMaterial({
+    transparent: true, opacity: displayOpacity, depthWrite: displayOpacity > 0.82 });
   const mesh = new THREE.InstancedMesh(box, mat, cells.size);
+  mesh.userData.role = 'voxel';
   const m = new THREE.Matrix4();
   const color = new THREE.Color();
   let i = 0;
@@ -286,15 +341,35 @@ function buildShell(pts) {
       if (floor[ai][ri] < run) floor[ai][ri] = run; else run = floor[ai][ri];
     }
   }
-  // smooth over bearing and range
-  const sm = floor.map(c => c.slice());
-  for (let ai = 0; ai < N_AZ; ai++) {
-    const p = floor[(ai-1+N_AZ)%N_AZ], q = floor[ai], r = floor[(ai+1)%N_AZ];
-    for (let ri = 0; ri < N_R; ri++) {
-      const v = [p[ri], q[ri], r[ri], q[Math.max(0,ri-1)], q[Math.min(N_R-1,ri+1)]]
-                  .filter(x => !Number.isNaN(x));
-      sm[ai][ri] = v.length ? v.reduce((x,y)=>x+y,0)/v.length : NaN;
+  // smooth over bearing and range — the Smoothing slider sets how many passes,
+  // so the user can dial from a crisp faceted skin to a soft rounded one.
+  const passes = 1 + Math.round(smoothing * 5);   // 1..6
+  let sm = floor.map(c => c.slice());
+  for (let pass = 0; pass < passes; pass++) {
+    const nx = sm.map(c => c.slice());
+    for (let ai = 0; ai < N_AZ; ai++) {
+      const p = sm[(ai-1+N_AZ)%N_AZ], q = sm[ai], r = sm[(ai+1)%N_AZ];
+      for (let ri = 0; ri < N_R; ri++) {
+        const v = [p[ri], q[ri], r[ri], q[Math.max(0,ri-1)], q[Math.min(N_R-1,ri+1)]]
+                    .filter(x => !Number.isNaN(x));
+        nx[ai][ri] = v.length ? v.reduce((x,y)=>x+y,0)/v.length : NaN;
+      }
     }
+    sm = nx;
+  }
+  // Also round the ragged outer rim proportionally to smoothing.
+  for (let pass = 0; pass < passes; pass++) {
+    const nr = rmaxCol.slice();
+    for (let ai = 0; ai < N_AZ; ai++)
+      nr[ai] = Math.round((rmaxCol[(ai-1+N_AZ)%N_AZ] + rmaxCol[ai] + rmaxCol[(ai+1)%N_AZ]) / 3);
+    rmaxCol.set(nr);
+  }
+  // Clamp the innermost rings to a shared azimuthal mean so the apex is a clean
+  // point instead of a starburst of near-vertical facets near the receiver.
+  for (let ri = 0; ri < 2; ri++) {
+    let s = 0, n = 0;
+    for (let ai = 0; ai < N_AZ; ai++) if (!Number.isNaN(sm[ai][ri])) { s += sm[ai][ri]; n++; }
+    if (n) { const mean = s / n; for (let ai = 0; ai < N_AZ; ai++) if (!Number.isNaN(sm[ai][ri])) sm[ai][ri] = mean; }
   }
 
   const cols = N_AZ + 1;
@@ -325,12 +400,17 @@ function buildShell(pts) {
   geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
   geo.setIndex(index);
   geo.computeVertexNormals();
-  g.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-    vertexColors: true, transparent: true, opacity: 0.42,
-    side: THREE.DoubleSide, depthWrite: false })));
-  g.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-    color: 0x9fdcff, wireframe: true, transparent: true, opacity: 0.13,
-    side: THREE.DoubleSide })));
+  const fillMesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+    vertexColors: true, transparent: true, opacity: displayOpacity,
+    side: THREE.DoubleSide, depthWrite: displayOpacity > 0.82 }));
+  fillMesh.userData.role = 'fill';
+  g.add(fillMesh);
+  const wireMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0x9fdcff, wireframe: true, transparent: true,
+    opacity: 0.2 * Math.max(0, (0.5 - displayOpacity) / 0.5), side: THREE.DoubleSide }));
+  wireMesh.userData.role = 'wire';
+  wireMesh.visible = wireMesh.material.opacity > 0.02;
+  g.add(wireMesh);
   return g;
 }
 
@@ -362,6 +442,13 @@ function initScene(data) {
 
   scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x06090f, 0.0012);
+
+  // High ambient keeps colours vivid in the glassy/transparent look; a soft
+  // directional light gives the surfaces shape once the Solidity slider is up.
+  scene.add(new THREE.AmbientLight(0xffffff, 0.82));
+  const key = new THREE.DirectionalLight(0xffffff, 0.55);
+  key.position.set(-0.4, 1, 0.6);
+  scene.add(key);
 
   camera = new THREE.PerspectiveCamera(55, W/H, 0.1, 3000);
   camera.position.set(-235, 300, 205);
@@ -450,6 +537,24 @@ function wireUI() {
       rebuild();
     });
   });
+
+  // Solidity — updates materials live (no rebuild), so it's smooth to drag.
+  const op = document.getElementById('opacity'), opVal = document.getElementById('opVal');
+  op.addEventListener('input', () => {
+    displayOpacity = op.value / 100;
+    opVal.textContent = op.value + '%';
+    applyOpacity();
+  });
+  // Smoothing — changes geometry, so debounce a rebuild while dragging.
+  const sm = document.getElementById('smooth'), smVal = document.getElementById('smVal');
+  let smTimer = null;
+  sm.addEventListener('input', () => {
+    smoothing = sm.value / 100;
+    smVal.textContent = smoothing < 0.2 ? 'crisp' : smoothing < 0.45 ? 'low'
+                      : smoothing < 0.7 ? 'medium' : smoothing < 0.9 ? 'high' : 'max';
+    clearTimeout(smTimer);
+    smTimer = setTimeout(rebuild, 140);
+  });
   document.querySelectorAll('button[data-band]').forEach(btn => {
     btn.addEventListener('click', () => {
       const b = btn.dataset.band; bands[b] = !bands[b];
@@ -476,8 +581,43 @@ function wireUI() {
   });
 }
 
-// state outlines for geographic context
+// Geographic context: state borders (home states highlighted), lakes, and a
+// handful of regional cities for orientation. All vector, all optional.
+const HOME_STATES = new Set(['27', '55']);   // FIPS: Minnesota, Wisconsin
+const CITIES = [
+  ['MSP', 44.98, -93.27], ['Duluth', 46.79, -92.10], ['Rochester', 44.02, -92.48],
+  ['Eau Claire', 44.81, -91.50], ['La Crosse', 43.81, -91.25], ['St Cloud', 45.56, -94.16],
+  ['Madison', 43.07, -89.40], ['Green Bay', 44.51, -88.02], ['Wausau', 44.96, -89.63],
+  ['Fargo', 46.88, -96.79], ['Sioux Falls', 43.55, -96.70], ['Des Moines', 41.59, -93.62],
+  ['Milwaukee', 43.04, -87.91],
+];
+
+function makeGeoToXZ(data) {
+  const RLAT = data.recv_lat, RLON = data.recv_lon, RADL = RLAT * DEG;
+  return (lon, lat) => new THREE.Vector3((lat - RLAT) * 60, 0, (lon - RLON) * Math.cos(RADL) * 60);
+}
+function ringsOf(geo) {
+  if (geo.type === 'Polygon') return geo.coordinates;
+  if (geo.type === 'MultiPolygon') return geo.coordinates.flatMap(p => p);
+  if (geo.type === 'LineString') return [geo.coordinates];
+  if (geo.type === 'MultiLineString') return geo.coordinates;
+  return [];
+}
+function textSprite(txt, color, px = 30) {
+  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
+  const cx = cv.getContext('2d');
+  cx.fillStyle = color; cx.font = 'bold ' + px + 'px monospace';
+  cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(txt, 128, 32);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), transparent: true, opacity: 0.85, depthTest: false }));
+  sp.scale.set(28, 7, 1);
+  return sp;
+}
+
 async function loadStateMap(data) {
+  const geoToXZ = makeGeoToXZ(data);
+  const RLAT = data.recv_lat, RLON = data.recv_lon, RADL = RLAT * DEG;
+
+  // --- state borders ---
   try {
     const [resp, topo] = await Promise.all([
       fetch('https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json'),
@@ -485,23 +625,45 @@ async function loadStateMap(data) {
     ]);
     const tj = await resp.json();
     const states = topo.feature(tj, tj.objects.states);
-    const RLAT = data.recv_lat, RLON = data.recv_lon, RADL = RLAT * DEG;
-    function geoToXZ(lon, lat) {
-      return new THREE.Vector3((lat - RLAT) * 60, 0, (lon - RLON) * Math.cos(RADL) * 60);
-    }
-    function rings(geo) {
-      if (geo.type === 'Polygon') return geo.coordinates;
-      if (geo.type === 'MultiPolygon') return geo.coordinates.flatMap(p => p);
-      return [];
-    }
     for (const feat of states.features) {
-      for (const ring of rings(feat.geometry)) {
+      const home = HOME_STATES.has(String(feat.id));
+      const mat = new THREE.LineBasicMaterial({
+        color: home ? 0x6fd6c0 : 0x3f82b8, transparent: true, opacity: home ? 0.95 : 0.7 });
+      for (const ring of ringsOf(feat.geometry)) {
         if (ring.length < 2) continue;
         const geo = new THREE.BufferGeometry().setFromPoints(ring.map(([lon,lat]) => geoToXZ(lon,lat)));
-        scene.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x1e4a64, transparent: true, opacity: 0.5 })));
+        scene.add(new THREE.Line(geo, mat));
       }
     }
   } catch (e) { console.warn('state map:', e); }
+
+  // --- lakes (Natural Earth via jsDelivr GitHub proxy) — orientation only ---
+  try {
+    const r = await fetch('https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_lakes.geojson');
+    const gj = await r.json();
+    const inView = (lon, lat) => Math.abs(lat - RLAT) < 5.5 && Math.abs(lon - RLON) < 8;
+    const lakeMat = new THREE.LineBasicMaterial({ color: 0x2f74a8, transparent: true, opacity: 0.75 });
+    for (const feat of gj.features) {
+      for (const ring of ringsOf(feat.geometry)) {
+        if (ring.length < 2 || !ring.some(([lon,lat]) => inView(lon,lat))) continue;
+        const geo = new THREE.BufferGeometry().setFromPoints(ring.map(([lon,lat]) => geoToXZ(lon,lat)));
+        scene.add(new THREE.Line(geo, lakeMat));
+      }
+    }
+  } catch (e) { console.warn('lakes:', e); }
+
+  // --- regional cities (dots + labels) ---
+  const dotGeo = new THREE.SphereGeometry(1.4, 8, 8);
+  const dotMat = new THREE.MeshBasicMaterial({ color: 0xbfe4ff });
+  for (const [name, lat, lon] of CITIES) {
+    const p = geoToXZ(lon, lat);
+    if (Math.hypot(p.x, p.z) > 270) continue;   // beyond range rings
+    const dot = new THREE.Mesh(dotGeo, dotMat); dot.position.copy(p); dot.position.y = 0.5;
+    scene.add(dot);
+    const lbl = textSprite(name, '#bfe4ff');
+    lbl.position.set(p.x, 7, p.z);
+    scene.add(lbl);
+  }
 }
 
 fetch('/cone').then(r => r.json()).then(d => {
