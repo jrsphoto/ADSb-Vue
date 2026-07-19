@@ -341,23 +341,30 @@ function buildShell(pts) {
       if (floor[ai][ri] < run) floor[ai][ri] = run; else run = floor[ai][ri];
     }
   }
-  // smooth over bearing and range — the Smoothing slider sets how many passes,
-  // so the user can dial from a crisp faceted skin to a soft rounded one.
+  // Smooth over bearing and range — the Smoothing slider sets how many passes.
+  // Ping-pong two pre-allocated flat buffers and average the up-to-5 valid
+  // (non-NaN; note v===v is false only for NaN) neighbours by index arithmetic,
+  // so the hot loop allocates nothing per pass or per cell.  sm[ai * N_R + ri].
   const passes = 1 + Math.round(smoothing * 5);   // 1..6
-  let sm = floor.map(c => c.slice());
+  let A = new Float32Array(N_AZ * N_R), B = new Float32Array(N_AZ * N_R);
+  for (let ai = 0; ai < N_AZ; ai++) { const base = ai*N_R; for (let ri = 0; ri < N_R; ri++) A[base+ri] = floor[ai][ri]; }
   for (let pass = 0; pass < passes; pass++) {
-    const nx = sm.map(c => c.slice());
     for (let ai = 0; ai < N_AZ; ai++) {
-      const p = sm[(ai-1+N_AZ)%N_AZ], q = sm[ai], r = sm[(ai+1)%N_AZ];
+      const b = ai*N_R, bL = ((ai-1+N_AZ)%N_AZ)*N_R, bR = ((ai+1)%N_AZ)*N_R;
       for (let ri = 0; ri < N_R; ri++) {
-        const v = [p[ri], q[ri], r[ri], q[Math.max(0,ri-1)], q[Math.min(N_R-1,ri+1)]]
-                    .filter(x => !Number.isNaN(x));
-        nx[ai][ri] = v.length ? v.reduce((x,y)=>x+y,0)/v.length : NaN;
+        let s = 0, n = 0, v;
+        v = A[bL+ri];                if (v === v) { s += v; n++; }
+        v = A[b+ri];                 if (v === v) { s += v; n++; }
+        v = A[bR+ri];                if (v === v) { s += v; n++; }
+        if (ri > 0)     { v = A[b+ri-1]; if (v === v) { s += v; n++; } }
+        if (ri < N_R-1) { v = A[b+ri+1]; if (v === v) { s += v; n++; } }
+        B[b+ri] = n ? s / n : NaN;
       }
     }
-    sm = nx;
+    const t = A; A = B; B = t;   // ping-pong; no reallocation
   }
-  // Also round the ragged outer rim proportionally to smoothing.
+  const sm = A;
+  // Round the ragged outer rim proportionally to smoothing.
   for (let pass = 0; pass < passes; pass++) {
     const nr = rmaxCol.slice();
     for (let ai = 0; ai < N_AZ; ai++)
@@ -368,19 +375,19 @@ function buildShell(pts) {
   // point instead of a starburst of near-vertical facets near the receiver.
   for (let ri = 0; ri < 2; ri++) {
     let s = 0, n = 0;
-    for (let ai = 0; ai < N_AZ; ai++) if (!Number.isNaN(sm[ai][ri])) { s += sm[ai][ri]; n++; }
-    if (n) { const mean = s / n; for (let ai = 0; ai < N_AZ; ai++) if (!Number.isNaN(sm[ai][ri])) sm[ai][ri] = mean; }
+    for (let ai = 0; ai < N_AZ; ai++) { const v = sm[ai*N_R+ri]; if (v === v) { s += v; n++; } }
+    if (n) { const mean = s / n; for (let ai = 0; ai < N_AZ; ai++) if (sm[ai*N_R+ri] === sm[ai*N_R+ri]) sm[ai*N_R+ri] = mean; }
   }
 
   const cols = N_AZ + 1;
   const pos = new Float32Array(cols * N_R * 3);
   const col = new Float32Array(cols * N_R * 3);
-  const valid = (ci, ri) => { const ai = ci % N_AZ; return ri <= rmaxCol[ai] && !Number.isNaN(sm[ai][ri]); };
+  const valid = (ci, ri) => { const ai = ci % N_AZ; return ri <= rmaxCol[ai] && !Number.isNaN(sm[ai*N_R+ri]); };
   for (let ci = 0; ci < cols; ci++) {
     const ai = ci % N_AZ, azRad = ci * AZ * DEG;
     for (let ri = 0; ri < N_R; ri++) {
       const idx = (ci * N_R + ri) * 3, r = ri * RSTEP;
-      const altFt = Number.isNaN(sm[ai][ri]) ? 0 : sm[ai][ri];
+      const altFt = Number.isNaN(sm[ai*N_R+ri]) ? 0 : sm[ai*N_R+ri];
       pos[idx] = r * Math.cos(azRad); pos[idx+1] = altFt * ALT_SCALE; pos[idx+2] = r * Math.sin(azRad);
       const [cr, cg, cb] = altColor(altFt);
       col[idx] = cr; col[idx+1] = cg; col[idx+2] = cb;
@@ -583,7 +590,6 @@ function wireUI() {
 
 // Geographic context: state borders (home states highlighted), lakes, and a
 // handful of regional cities for orientation. All vector, all optional.
-const HOME_STATES = new Set(['27', '55']);   // FIPS: Minnesota, Wisconsin
 const CITIES = [
   ['MSP', 44.98, -93.27], ['Duluth', 46.79, -92.10], ['Rochester', 44.02, -92.48],
   ['Eau Claire', 44.81, -91.50], ['La Crosse', 43.81, -91.25], ['St Cloud', 45.56, -94.16],
@@ -602,6 +608,36 @@ function ringsOf(geo) {
   if (geo.type === 'LineString') return [geo.coordinates];
   if (geo.type === 'MultiLineString') return geo.coordinates;
   return [];
+}
+// even-odd point-in-polygon over all a feature's rings (US states have no holes)
+function pointInRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+// Home states = the state the receiver sits in, plus any whose border passes
+// within ~35 nm (so a receiver on a state line lights up both). Derived from the
+// receiver position, so it's correct at any deployment without a hardcoded list.
+function homeStateIds(features, rlon, rlat) {
+  const NEAR = 35 / 60;   // ~35 nm in degrees latitude
+  const cosL = Math.cos(rlat * DEG);
+  const home = new Set();
+  for (const feat of features) {
+    let hit = false;
+    for (const ring of ringsOf(feat.geometry)) {
+      if (pointInRing(rlon, rlat, ring)) { hit = true; break; }
+      for (const [lon, lat] of ring) {
+        const dLat = lat - rlat, dLon = (lon - rlon) * cosL;
+        if (dLat*dLat + dLon*dLon < NEAR*NEAR) { hit = true; break; }
+      }
+      if (hit) break;
+    }
+    if (hit) home.add(String(feat.id));
+  }
+  return home;
 }
 function textSprite(txt, color, px = 30) {
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
@@ -625,8 +661,9 @@ async function loadStateMap(data) {
     ]);
     const tj = await resp.json();
     const states = topo.feature(tj, tj.objects.states);
+    const homeSet = homeStateIds(states.features, RLON, RLAT);
     for (const feat of states.features) {
-      const home = HOME_STATES.has(String(feat.id));
+      const home = homeSet.has(String(feat.id));
       const mat = new THREE.LineBasicMaterial({
         color: home ? 0x6fd6c0 : 0x3f82b8, transparent: true, opacity: home ? 0.95 : 0.7 });
       for (const ring of ringsOf(feat.geometry)) {
