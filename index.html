@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ADS-B Reception Volume</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -70,6 +70,29 @@ input[type=range]::-moz-range-thumb {
 #loading small { font-size: 11px; color: #1a3a52; }
 .spin { display: inline-block; animation: spin 1.2s linear infinite; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- mobile / small-screen: collapse the panel behind a toggle button --- */
+#menuToggle {
+  position: fixed; top: 12px; left: 12px; z-index: 30;
+  width: 42px; height: 42px; border-radius: 9px;
+  background: rgba(6,9,15,0.9); border: 1px solid #1a3a54;
+  color: #9fc6dd; font-size: 19px; line-height: 1; cursor: pointer;
+  display: none; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px); font-family: inherit;
+}
+#ui { transition: transform 0.24s ease, opacity 0.24s ease; z-index: 20; }
+#ui.collapsed { transform: translateX(-115%); opacity: 0; pointer-events: none; }
+
+@media (max-width: 680px), (pointer: coarse) and (max-width: 900px) {
+  #menuToggle { display: flex; }
+  #ui {
+    top: 62px; left: 10px; right: 10px; min-width: 0;
+    max-height: calc(100dvh - 76px); overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #hint { display: none; }
+  #legend { font-size: 9px; padding: 7px 10px; gap: 4px; }
+}
 </style>
 </head>
 <body>
@@ -79,6 +102,8 @@ input[type=range]::-moz-range-thumb {
 </div>
 
 <div id="canvas"></div>
+
+<button id="menuToggle" aria-label="Toggle controls">&#9776;</button>
 
 <div id="ui" style="display:none">
   <h1>Reception Volume</h1>
@@ -537,6 +562,15 @@ function updateMeta(d) {
 }
 
 function wireUI() {
+  // Mobile / small screens: start collapsed behind the ☰ button; tap toggles.
+  const smallMQ = matchMedia('(max-width: 680px), (pointer: coarse) and (max-width: 900px)');
+  const uiEl = document.getElementById('ui'), toggle = document.getElementById('menuToggle');
+  if (smallMQ.matches) uiEl.classList.add('collapsed');
+  toggle.addEventListener('click', () => {
+    const collapsed = uiEl.classList.toggle('collapsed');
+    toggle.innerHTML = collapsed ? '&#9776;' : '&#10005;';   // ☰ when closed, ✕ when open
+  });
+
   document.querySelectorAll('button[data-mode]').forEach(btn => {
     btn.addEventListener('click', () => {
       mode = btn.dataset.mode;
