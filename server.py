@@ -45,7 +45,8 @@ FT_PER_NM = 6076.12         # feet per nautical mile
 STEP = CELL_NM / NM_PER_DEG  # de-dup grid step in degrees
 
 _recv = {"lat": None, "lon": None}
-_cache = {"ts": 0.0, "data": None}
+# data = parsed dict; json/gz = payload serialized once per rebuild (see _ensure)
+_cache = {"ts": 0.0, "data": None, "json": None, "gz": None}
 _cache_lock = threading.Lock()   # guards the (fast) cache read/write only
 _build_lock = threading.Lock()   # single-flights the (slow) rebuild
 
@@ -167,39 +168,53 @@ def build_points():
     }
 
 
-def get_cone(refresh=False):
-    # Fast path: return a fresh cache hit without ever waiting on a rebuild.
-    with _cache_lock:
-        data, ts = _cache["data"], _cache["ts"]
-    if data is not None and not refresh and (time.time() - ts) < CACHE_SECS:
-        return data
+def _fresh(snap, refresh):
+    return snap["json"] is not None and not refresh and (time.time() - snap["ts"]) < CACHE_SECS
 
-    # Slow path: only one thread rebuilds at a time. Others block here, then the
-    # double-check below lets them ride the just-built result instead of
-    # rebuilding again (single-flight). The expensive work is OUTSIDE the cache
-    # lock, so concurrent cache-hit readers are never blocked by it.
+
+def _ensure(refresh=False):
+    """Return a cache snapshot with the payload already serialized + gzipped.
+
+    Serialization and compression happen once per rebuild here, not per request,
+    so hitting /cone from many tabs or a poller just re-sends the same bytes.
+    """
+    with _cache_lock:
+        snap = dict(_cache)
+    if _fresh(snap, refresh):
+        return snap
+    # Slow path: single-flight the rebuild. The expensive fetch/parse/serialize
+    # runs outside the cache lock, so concurrent cache-hit readers never block.
     with _build_lock:
         with _cache_lock:
-            data, ts = _cache["data"], _cache["ts"]
-        if data is not None and not refresh and (time.time() - ts) < CACHE_SECS:
-            return data
+            snap = dict(_cache)
+        if _fresh(snap, refresh):
+            return snap
         data = build_points()
+        raw = json.dumps(data).encode("utf-8")
+        snap = {"ts": time.time(), "data": data, "json": raw, "gz": gzip.compress(raw, 6)}
         with _cache_lock:
-            _cache["data"], _cache["ts"] = data, time.time()
-        return data
+            _cache.update(snap)
+        return snap
+
+
+def get_cone(refresh=False):
+    return _ensure(refresh)["data"]
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
-    def _send(self, code, body, ctype, gz_ok=True):
+    def _send(self, code, body, ctype, gz_ok=True, encoding=None):
+        # encoding set => body is already compressed; just declare it. Otherwise
+        # gzip on the fly for large-enough bodies the client accepts.
         if isinstance(body, str):
             body = body.encode("utf-8")
-        accepts_gz = "gzip" in self.headers.get("Accept-Encoding", "")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
-        if gz_ok and accepts_gz and len(body) > 1400:
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
+        elif gz_ok and "gzip" in self.headers.get("Accept-Encoding", "") and len(body) > 1400:
             body = gzip.compress(body, 6)
             self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(body)))
@@ -207,6 +222,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
+
+    def _accepts_gzip(self):
+        return "gzip" in self.headers.get("Accept-Encoding", "")
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -216,8 +234,12 @@ class Handler(BaseHTTPRequestHandler):
                 with open(os.path.join(HERE, "index.html"), "rb") as fh:
                     self._send(200, fh.read(), "text/html; charset=utf-8")
             elif path in ("/cone", "/data"):
-                refresh = "refresh=true" in query
-                self._send(200, json.dumps(get_cone(refresh)), "application/json")
+                snap = _ensure("refresh=true" in query)
+                # Pre-serialized + pre-gzipped at build time; just write the bytes.
+                if self._accepts_gzip():
+                    self._send(200, snap["gz"], "application/json", encoding="gzip")
+                else:
+                    self._send(200, snap["json"], "application/json", gz_ok=False)
             elif path == "/health":
                 self._send(200, json.dumps({"ok": True}), "application/json")
             else:
