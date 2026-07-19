@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADS-B Reception Volume</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #06090f; overflow: hidden; font-family: 'SF Mono', Consolas, monospace; font-size: 12px; color: #7aaecc; }
+#canvas { position: fixed; inset: 0; }
+#ui {
+  position: fixed; top: 16px; left: 16px;
+  background: rgba(6,9,15,0.82); border: 1px solid #0e2a40;
+  border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+  min-width: 210px; backdrop-filter: blur(4px);
+}
+#ui h1 { font-size: 12px; font-weight: 500; color: #b0cee0; letter-spacing: 0.8px; text-transform: uppercase; }
+#meta { font-size: 10px; color: #2a5a74; line-height: 1.7; }
+.sec { font-size: 9px; color: #1e4258; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+.btns { display: flex; flex-direction: column; gap: 5px; }
+button {
+  padding: 5px 10px; border-radius: 5px; border: 1px solid #1a3a54;
+  background: transparent; color: #4a7a9a; font-size: 11px;
+  font-family: inherit; cursor: pointer; text-align: left;
+  transition: all 0.12s; display: flex; align-items: center; gap: 7px;
+}
+button:hover { border-color: #2a5a7a; color: #6a9ab4; }
+button .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+button.on .lbl { color: #c8dae8; }
+button.high.on  { border-color: hsl(188,85%,50%); }
+button.mid.on   { border-color: hsl(108,85%,50%); }
+button.low.on   { border-color: hsl(44,85%,50%); }
+button.vhigh.on { border-color: hsl(251,85%,50%); }
+button.max.on   { border-color: hsl(296,85%,50%); }
+button.mode.on  { border-color: #3a7ac0; color: #cfe6f6; background: rgba(40,90,150,0.18); }
+button.view    { border-color: #1a3a54; color: #3a6a84; font-size: 10px; }
+button.view:hover { border-color: #2a5a7a; color: #5a8aaa; }
+#legend {
+  position: fixed; bottom: 16px; left: 16px;
+  background: rgba(6,9,15,0.75); border: 1px solid #0e2a40;
+  border-radius: 7px; padding: 9px 13px; font-size: 10px; color: #3a6070;
+  display: flex; flex-direction: column; gap: 5px; backdrop-filter: blur(4px);
+}
+.li { display: flex; align-items: center; gap: 6px; }
+.ld { width: 8px; height: 8px; border-radius: 50%; }
+.lk { width: 8px; height: 8px; background: #ef4444; border-radius: 0; transform: rotate(45deg); }
+#hint {
+  position: fixed; bottom: 16px; right: 16px;
+  font-size: 10px; color: #1e3a50; text-align: right; line-height: 1.8;
+}
+#loading {
+  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 12px; background: #06090f;
+}
+#loading p { font-size: 14px; color: #2a5a7a; }
+#loading small { font-size: 11px; color: #1a3a52; }
+.spin { display: inline-block; animation: spin 1.2s linear infinite; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="loading">
+  <p><span class="spin">&#8635;</span> Reading reception data&hellip;</p>
+  <small>Pulling tar1090 recent-history chunks from your Ultrafeeder</small>
+</div>
+
+<div id="canvas"></div>
+
+<div id="ui" style="display:none">
+  <h1>Reception Volume</h1>
+  <div id="meta"></div>
+
+  <div class="sec">Render mode</div>
+  <div class="btns">
+    <button class="mode on" data-mode="voxel">&#9632; Density volume</button>
+    <button class="mode"    data-mode="shell">&#9680; Detection cone</button>
+    <button class="mode"    data-mode="points">&#8226; Point cloud</button>
+  </div>
+
+  <div class="sec">Altitude bands</div>
+  <div class="btns">
+    <button class="max on" data-band="max">
+      <span class="dot" style="background:hsl(296,85%,50%)"></span><span class="lbl">Above 40,000 ft</span>
+    </button>
+    <button class="vhigh on" data-band="vhigh">
+      <span class="dot" style="background:hsl(251,85%,50%)"></span><span class="lbl">30k &ndash; 40k ft</span>
+    </button>
+    <button class="high on" data-band="high">
+      <span class="dot" style="background:hsl(188,85%,50%)"></span><span class="lbl">20k &ndash; 30k ft</span>
+    </button>
+    <button class="mid on" data-band="mid">
+      <span class="dot" style="background:hsl(108,85%,50%)"></span><span class="lbl">5k &ndash; 20k ft</span>
+    </button>
+    <button class="low on" data-band="low">
+      <span class="dot" style="background:hsl(44,85%,50%)"></span><span class="lbl">Below 5,000 ft</span>
+    </button>
+  </div>
+
+  <div class="btns">
+    <button class="view" id="vNorth">&#x2191; Top (North up)</button>
+    <button class="view" id="vSide">&#x25B6; Side view</button>
+    <button class="view" id="vOblique">&#x2714; Reset view</button>
+    <button class="view" id="vRefresh" style="margin-top:4px;border-color:#0e3050">&#x21BB; Refresh data</button>
+    <div id="cacheInfo" style="font-size:10px;color:#1a3a50;line-height:1.6;padding-top:2px"></div>
+  </div>
+</div>
+
+<div id="legend" style="display:none">
+  <div class="li"><span class="ld" style="background:hsl(296,85%,55%)"></span> &gt; 40k ft</div>
+  <div class="li"><span class="ld" style="background:hsl(188,85%,50%)"></span> 20k &ndash; 30k ft</div>
+  <div class="li"><span class="ld" style="background:hsl(108,85%,50%)"></span> 5k &ndash; 20k ft</div>
+  <div class="li"><span class="ld" style="background:hsl(44,85%,50%)"></span> &lt; 5k ft</div>
+  <div class="li"><span class="ld" style="background:#60a5fa; border-radius:50%"></span> Receiver</div>
+</div>
+
+<div id="hint">
+  Drag to orbit &nbsp;&middot;&nbsp; Scroll to zoom<br>
+  Right-drag to pan
+</div>
+
+<script type="module">
+import * as THREE from 'https://esm.sh/three@0.152.2';
+import { OrbitControls } from 'https://esm.sh/three@0.152.2/examples/jsm/controls/OrbitControls.js';
+
+const ALT_SCALE = 1 / 250;    // ft -> scene units. ~2x vertical exaggeration so
+                              // the thin altitude band reads as a dome, not a
+                              // pancake (45k ft -> 180 units; 250 nm -> 250 units).
+const FT_PER_NM = 6076.12;
+const DEG = Math.PI / 180;
+
+let scene, camera, renderer, controls;
+let DATA = null;
+let modeGroup = null;                 // current render-mode object(s)
+let mode = 'voxel';
+const bands = { max: true, vhigh: true, high: true, mid: true, low: true };
+
+// ---- helpers ---------------------------------------------------------------
+function toXYZ(brg, dist, alt) {
+  const r = brg * DEG;
+  return [dist * Math.cos(r), alt * ALT_SCALE, dist * Math.sin(r)];
+}
+function hslToRgb(h, s, l) {
+  const q = l < 0.5 ? l*(1+s) : l+s-l*s, p = 2*l-q;
+  const f = t => { if(t<0)t+=1; if(t>1)t-=1;
+    if(t<1/6) return p+(q-p)*6*t; if(t<1/2) return q;
+    if(t<2/3) return p+(q-p)*(2/3-t)*6; return p; };
+  return [f(h+1/3), f(h), f(h-1/3)];
+}
+function altColor(alt) {
+  const a = Math.min(Math.max(alt||0, 0), 42000);
+  return hslToRgb((28 + (a/42000)*268)/360, 0.85, 0.50);
+}
+function bandOf(a) {
+  if (a >= 40000) return 'max';
+  if (a >= 30000) return 'vhigh';
+  if (a >= 20000) return 'high';
+  if (a >= 5000)  return 'mid';
+  return 'low';
+}
+function activePoints() {
+  return DATA.points.filter(p => bands[bandOf(p[2])]);
+}
+
+// ---- render mode: point cloud ---------------------------------------------
+function buildPoints(pts) {
+  const g = new THREE.Group();
+  if (!pts.length) return g;
+  const pos = new Float32Array(pts.length * 3);
+  const col = new Float32Array(pts.length * 3);
+  pts.forEach(([b, d, a], i) => {
+    const [x, y, z] = toXYZ(b, d, a);
+    pos[i*3] = x; pos[i*3+1] = y; pos[i*3+2] = z;
+    const [r, gr, bl] = altColor(a);
+    col[i*3] = r; col[i*3+1] = gr; col[i*3+2] = bl;
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  g.add(new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 0.9, vertexColors: true, transparent: true, opacity: 0.75 })));
+  return g;
+}
+
+// ---- render mode: density voxel volume ------------------------------------
+function buildVoxels(pts) {
+  const g = new THREE.Group();
+  if (!pts.length) return g;
+  const CELL = 7;          // nm, horizontal
+  const ALT_CELL = 2000;   // ft, vertical
+  const cells = new Map();
+  for (const [b, d, a] of pts) {
+    const [x, , z] = toXYZ(b, d, a);
+    const gx = Math.round(x / CELL), gz = Math.round(z / CELL);
+    const gy = Math.floor((a||0) / ALT_CELL);
+    const key = gx + ',' + gy + ',' + gz;
+    let c = cells.get(key);
+    if (!c) { c = { gx, gy, gz, n: 0, asum: 0 }; cells.set(key, c); }
+    c.n++; c.asum += (a||0);
+  }
+  let maxN = 1;
+  for (const c of cells.values()) if (c.n > maxN) maxN = c.n;
+  const logMax = Math.log(maxN + 1);
+
+  const box = new THREE.BoxGeometry(CELL*0.9, ALT_CELL*ALT_SCALE*0.9, CELL*0.9);
+  // Normal alpha blending (NOT additive): overlapping translucent cells build
+  // up toward saturated colour where reception is dense, without blowing out
+  // to white the way additive does when thousands of boxes overlap.
+  const mat = new THREE.MeshBasicMaterial({
+    vertexColors: false, transparent: true, opacity: 0.28, depthWrite: false });
+  const mesh = new THREE.InstancedMesh(box, mat, cells.size);
+  const m = new THREE.Matrix4();
+  const color = new THREE.Color();
+  let i = 0;
+  for (const c of cells.values()) {
+    m.setPosition(c.gx*CELL, (c.gy+0.5)*ALT_CELL*ALT_SCALE, c.gz*CELL);
+    mesh.setMatrixAt(i, m);
+    const bright = 0.45 + 0.55 * (Math.log(c.n + 1) / logMax); // faint -> bright
+    const [r, gr, bl] = altColor(c.asum / c.n);
+    color.setRGB(r*bright, gr*bright, bl*bright);
+    mesh.setColorAt(i, color);
+    i++;
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  g.add(mesh);
+  return g;
+}
+
+// ---- render mode: coverage-floor "detection cone" -------------------------
+// The bottom of what the antenna can hear: for each bearing and ground range,
+// the LOWEST altitude ever received. It's ~0 near the receiver (you hear the
+// pattern floor) and rises with range as the horizon/terrain hides low traffic
+// — the classic ADS-B detection cone. Dents = local blockage; the ragged outer
+// edge = how far each bearing reaches at all.
+function buildShell(pts) {
+  const g = new THREE.Group();
+  if (pts.length < 50) return g;
+  const N_AZ = 120, AZ = 360 / N_AZ;    // 3 deg bearings
+  const RSTEP = 8;                       // nm ground-range rings
+  let rmaxNm = 0; for (const p of pts) if (p[1] > rmaxNm) rmaxNm = p[1];
+  rmaxNm = Math.min(rmaxNm, 320);
+  const N_R = Math.ceil(rmaxNm / RSTEP) + 1;
+
+  const floor = Array.from({length: N_AZ}, () => new Float32Array(N_R).fill(NaN));
+  for (const [b, d, a] of pts) {
+    if (d > rmaxNm) continue;
+    const ai = ((Math.floor(b / AZ) % N_AZ) + N_AZ) % N_AZ;
+    const ri = Math.round(d / RSTEP);
+    const cur = floor[ai][ri];
+    if (Number.isNaN(cur) || (a||0) < cur) floor[ai][ri] = (a||0);
+  }
+  // per column: outer extent + interpolate interior gaps; anchor ring 0 at ground
+  const rmaxCol = new Int32Array(N_AZ);
+  for (let ai = 0; ai < N_AZ; ai++) {
+    let last = -1;
+    for (let ri = 0; ri < N_R; ri++) if (!Number.isNaN(floor[ai][ri])) last = ri;
+    rmaxCol[ai] = last;
+    let prev = -1;
+    for (let ri = 0; ri <= last; ri++) {
+      if (!Number.isNaN(floor[ai][ri])) {
+        if (prev >= 0 && ri - prev > 1) {
+          const va = floor[ai][prev], vb = floor[ai][ri];
+          for (let k = prev+1; k < ri; k++) floor[ai][k] = va + (vb-va)*(k-prev)/(ri-prev);
+        }
+        prev = ri;
+      }
+    }
+    if (last >= 0 && Number.isNaN(floor[ai][0])) floor[ai][0] = 0;
+  }
+  // fill empty bearings from nearest populated one
+  for (let ai = 0; ai < N_AZ; ai++) {
+    if (rmaxCol[ai] >= 0) continue;
+    for (let s = 1; s < N_AZ; s++) {
+      const l = (ai-s+N_AZ)%N_AZ, r = (ai+s)%N_AZ;
+      if (rmaxCol[l] >= 0) { floor[ai] = floor[l].slice(); rmaxCol[ai] = rmaxCol[l]; break; }
+      if (rmaxCol[r] >= 0) { floor[ai] = floor[r].slice(); rmaxCol[ai] = rmaxCol[r]; break; }
+    }
+  }
+  // The detection floor rises with distance (horizon hides low traffic farther
+  // out). Enforce non-decreasing-with-range per bearing: kills the min-altitude
+  // sampling noise while keeping the azimuthal variation (blockages) intact.
+  for (let ai = 0; ai < N_AZ; ai++) {
+    let run = 0;
+    for (let ri = 0; ri <= rmaxCol[ai]; ri++) {
+      if (Number.isNaN(floor[ai][ri])) continue;
+      if (floor[ai][ri] < run) floor[ai][ri] = run; else run = floor[ai][ri];
+    }
+  }
+  // smooth over bearing and range
+  const sm = floor.map(c => c.slice());
+  for (let ai = 0; ai < N_AZ; ai++) {
+    const p = floor[(ai-1+N_AZ)%N_AZ], q = floor[ai], r = floor[(ai+1)%N_AZ];
+    for (let ri = 0; ri < N_R; ri++) {
+      const v = [p[ri], q[ri], r[ri], q[Math.max(0,ri-1)], q[Math.min(N_R-1,ri+1)]]
+                  .filter(x => !Number.isNaN(x));
+      sm[ai][ri] = v.length ? v.reduce((x,y)=>x+y,0)/v.length : NaN;
+    }
+  }
+
+  const cols = N_AZ + 1;
+  const pos = new Float32Array(cols * N_R * 3);
+  const col = new Float32Array(cols * N_R * 3);
+  const valid = (ci, ri) => { const ai = ci % N_AZ; return ri <= rmaxCol[ai] && !Number.isNaN(sm[ai][ri]); };
+  for (let ci = 0; ci < cols; ci++) {
+    const ai = ci % N_AZ, azRad = ci * AZ * DEG;
+    for (let ri = 0; ri < N_R; ri++) {
+      const idx = (ci * N_R + ri) * 3, r = ri * RSTEP;
+      const altFt = Number.isNaN(sm[ai][ri]) ? 0 : sm[ai][ri];
+      pos[idx] = r * Math.cos(azRad); pos[idx+1] = altFt * ALT_SCALE; pos[idx+2] = r * Math.sin(azRad);
+      const [cr, cg, cb] = altColor(altFt);
+      col[idx] = cr; col[idx+1] = cg; col[idx+2] = cb;
+    }
+  }
+  const index = [];
+  for (let ci = 0; ci < cols - 1; ci++) {
+    for (let ri = 0; ri < N_R - 1; ri++) {
+      if (valid(ci,ri) && valid(ci+1,ri) && valid(ci,ri+1) && valid(ci+1,ri+1)) {
+        const a = ci*N_R+ri, b = (ci+1)*N_R+ri, c = ci*N_R+ri+1, d = (ci+1)*N_R+ri+1;
+        index.push(a, b, c,  b, d, c);
+      }
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  geo.setIndex(index);
+  geo.computeVertexNormals();
+  g.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.42,
+    side: THREE.DoubleSide, depthWrite: false })));
+  g.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0x9fdcff, wireframe: true, transparent: true, opacity: 0.13,
+    side: THREE.DoubleSide })));
+  return g;
+}
+
+function rebuild() {
+  if (modeGroup) { scene.remove(modeGroup); modeGroup.traverse(o => {
+    if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); }
+  const pts = activePoints();
+  modeGroup = mode === 'points' ? buildPoints(pts)
+            : mode === 'shell'  ? buildShell(pts)
+            :                     buildVoxels(pts);
+  scene.add(modeGroup);
+}
+
+// ---- scaffolding -----------------------------------------------------------
+function groundLine(pts, color, opacity = 0.3) {
+  const geo = new THREE.BufferGeometry().setFromPoints(pts.map(([x,z]) => new THREE.Vector3(x, 0, z)));
+  return new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity }));
+}
+
+function initScene(data) {
+  DATA = data;
+  const W = innerWidth, H = innerHeight;
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(W, H);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setClearColor(0x06090f);
+  document.getElementById('canvas').appendChild(renderer.domElement);
+
+  scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x06090f, 0.0012);
+
+  camera = new THREE.PerspectiveCamera(55, W/H, 0.1, 3000);
+  camera.position.set(-235, 300, 205);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.07;
+  controls.target.set(0, 20, 0);
+  controls.update();
+
+  loadStateMap(data);
+
+  // range rings
+  for (const nm of [50, 100, 150, 200, 250]) {
+    const ring = [];
+    for (let i = 0; i <= 128; i++) { const a = i/128*Math.PI*2; ring.push([nm*Math.sin(a), nm*Math.cos(a)]); }
+    scene.add(groundLine(ring, 0x0e3052, 0.35));
+  }
+  // bearing spokes
+  for (let b = 0; b < 360; b += 30) {
+    const r = b*DEG; scene.add(groundLine([[0,0],[252*Math.cos(r),252*Math.sin(r)]], 0x0a2538, 0.25));
+  }
+  // cardinal sprites
+  const CARDS = {N:0, NE:45, E:90, SE:135, S:180, SW:225, W:270, NW:315};
+  for (const [lbl, b] of Object.entries(CARDS)) {
+    const cv = document.createElement('canvas'); cv.width = 128; cv.height = 64;
+    const cx = cv.getContext('2d');
+    cx.fillStyle = '#1a4a6a'; cx.font = 'bold 36px monospace';
+    cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(lbl, 64, 32);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), transparent: true, opacity: 0.6 }));
+    const r = b*DEG; sp.position.set(263*Math.cos(r), 0, 263*Math.sin(r)); sp.scale.set(8, 4, 1);
+    scene.add(sp);
+  }
+  // receiver marker + altitude axis
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(1.6, 12, 12), new THREE.MeshBasicMaterial({ color: 0x60a5fa })));
+  const axis = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0, 45000*ALT_SCALE, 0)]);
+  scene.add(new THREE.Line(axis, new THREE.LineBasicMaterial({ color: 0x1a3a5a, transparent: true, opacity: 0.35 })));
+
+  rebuild();
+  updateMeta(data);
+  wireUI();
+
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('ui').style.display = 'flex';
+  document.getElementById('legend').style.display = 'flex';
+
+  let _raf = null;
+  (function animate(){ _raf = requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); })();
+
+  // Debug/introspection hook (harmless; useful for headless verification).
+  window.__adsb = {
+    get mode() { return mode; },
+    setMode(m) { mode = m; rebuild(); renderer.render(scene, camera); return this.stats(); },
+    freeze() { if (_raf) cancelAnimationFrame(_raf), _raf = null; renderer.render(scene, camera); },
+    resume() { if (!_raf) (function a(){ _raf = requestAnimationFrame(a); controls.update(); renderer.render(scene, camera); })(); },
+    stats() {
+      let pts = 0, inst = 0, tris = 0;
+      modeGroup && modeGroup.traverse(o => {
+        if (o.isPoints) pts += o.geometry.attributes.position.count;
+        if (o.isInstancedMesh) inst += o.count;
+        if (o.isMesh && o.geometry.index) tris += o.geometry.index.count / 3;
+      });
+      return { mode, points: pts, instances: inst, triangles: tris,
+               drawCalls: renderer.info.render.calls };
+    },
+  };
+}
+
+function updateMeta(d) {
+  const maxAll = Math.max.apply(null, d.cone_all).toFixed(0);
+  document.getElementById('meta').innerHTML =
+    d.count.toLocaleString() + ' obs &nbsp;|&nbsp; ' + d.chunks + ' chunks<br>' +
+    'max range <b style="color:#4a8aaa">' + maxAll + ' nm</b>';
+}
+
+function wireUI() {
+  document.querySelectorAll('button[data-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      mode = btn.dataset.mode;
+      document.querySelectorAll('button[data-mode]').forEach(b => b.classList.toggle('on', b === btn));
+      rebuild();
+    });
+  });
+  document.querySelectorAll('button[data-band]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const b = btn.dataset.band; bands[b] = !bands[b];
+      btn.classList.toggle('on', bands[b]); rebuild();
+    });
+  });
+  document.getElementById('vNorth').addEventListener('click', () => {
+    camera.up.set(1,0,0); camera.position.set(0,360,0); controls.target.set(0,0,0); controls.update();
+  });
+  document.getElementById('vSide').addEventListener('click', () => {
+    camera.up.set(0,1,0); camera.position.set(240,50,0); controls.target.set(0,25,0); controls.update();
+  });
+  document.getElementById('vOblique').addEventListener('click', () => {
+    camera.up.set(0,1,0); camera.position.set(-235,300,205); controls.target.set(0,25,0); controls.update();
+  });
+  document.getElementById('vRefresh').addEventListener('click', () => {
+    const btn = document.getElementById('vRefresh');
+    btn.textContent = '⟳ Refreshing…'; btn.disabled = true;
+    fetch('/cone?refresh=true').then(r => r.json()).then(d => {
+      DATA = d; rebuild(); updateMeta(d);
+      document.getElementById('cacheInfo').textContent = 'Live — fetched ' + new Date().toLocaleTimeString();
+      btn.textContent = '↻ Refresh data'; btn.disabled = false;
+    }).catch(e => { btn.textContent = '✕ ' + e.message; btn.disabled = false; });
+  });
+}
+
+// state outlines for geographic context
+async function loadStateMap(data) {
+  try {
+    const [resp, topo] = await Promise.all([
+      fetch('https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json'),
+      import('https://esm.sh/topojson-client@3'),
+    ]);
+    const tj = await resp.json();
+    const states = topo.feature(tj, tj.objects.states);
+    const RLAT = data.recv_lat, RLON = data.recv_lon, RADL = RLAT * DEG;
+    function geoToXZ(lon, lat) {
+      return new THREE.Vector3((lat - RLAT) * 60, 0, (lon - RLON) * Math.cos(RADL) * 60);
+    }
+    function rings(geo) {
+      if (geo.type === 'Polygon') return geo.coordinates;
+      if (geo.type === 'MultiPolygon') return geo.coordinates.flatMap(p => p);
+      return [];
+    }
+    for (const feat of states.features) {
+      for (const ring of rings(feat.geometry)) {
+        if (ring.length < 2) continue;
+        const geo = new THREE.BufferGeometry().setFromPoints(ring.map(([lon,lat]) => geoToXZ(lon,lat)));
+        scene.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x1e4a64, transparent: true, opacity: 0.5 })));
+      }
+    }
+  } catch (e) { console.warn('state map:', e); }
+}
+
+fetch('/cone').then(r => r.json()).then(d => {
+  if (!d.ok) throw new Error(d.error || 'no data');
+  initScene(d);
+}).catch(e => {
+  document.getElementById('loading').innerHTML =
+    '<p style="color:#7a2a2a">&#9888; ' + e.message + '</p>' +
+    '<small>Is the ultrafeeder reachable? Check server logs.</small>';
+});
+</script>
+</body>
+</html>

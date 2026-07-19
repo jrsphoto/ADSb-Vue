@@ -1,0 +1,19 @@
+# Run on skyscanner, alongside Ultrafeeder.
+#
+# host networking = the container reaches Ultrafeeder's tar1090 at 127.0.0.1:80
+# and publishes the viewer on the host's :24556 with no port juggling. This is
+# the low-impact default. If you'd rather use bridge networking, drop
+# network_mode, add `ports: ["24556:24556"]`, and point ADSB_ULTRAFEEDER at the
+# host's LAN IP (http://10.20.40.12).
+
+services:
+  adsbvue:
+    build: .
+    image: adsbvue:latest
+    container_name: adsbvue
+    network_mode: host
+    environment:
+      - ADSB_ULTRAFEEDER=http://127.0.0.1
+      - ADSB_PORT=24556
+      # - ADSB_MAX_CHUNKS=0   # widen the coverage envelope (all history)
+    restart: unless-stopped

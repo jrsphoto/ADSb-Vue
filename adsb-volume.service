@@ -1,0 +1,17 @@
+[Unit]
+Description=adsb-volume — 3D ADS-B reception viewer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ADSB_ULTRAFEEDER=http://10.20.40.12
+Environment=ADSB_PORT=24556
+# Uncomment to widen the coverage envelope (all history) at the cost of load time:
+# Environment=ADSB_MAX_CHUNKS=0
+ExecStart=/usr/bin/python3 %h/Development/adsb-volume/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
