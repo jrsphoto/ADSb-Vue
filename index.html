@@ -40,6 +40,8 @@ button.max.on   { border-color: hsl(296,85%,50%); }
 button.mode.on  { border-color: #3a7ac0; color: #cfe6f6; background: rgba(40,90,150,0.18); }
 button.view    { border-color: #1a3a54; color: #3a6a84; font-size: 10px; }
 button.view:hover { border-color: #2a5a7a; color: #5a8aaa; }
+button.view.on { border-color: #3a7ac0; color: #cfe6f6; background: rgba(40,90,150,0.18); }
+button.view:disabled { opacity: 0.45; cursor: default; }
 .slider { display: flex; flex-direction: column; gap: 3px; }
 .slider label { font-size: 10px; color: #5a86a0; display: flex; justify-content: space-between; }
 .slider label b { color: #9fc6dd; font-weight: 500; }
@@ -136,8 +138,13 @@ input[type=range]::-moz-range-thumb {
   <div class="sec" id="tlSec" style="display:none">Timeline &mdash; coverage over the window</div>
   <div class="btns" id="tlCtl" style="display:none">
     <div style="display:flex; align-items:center; gap:8px">
-      <button class="view" id="tlPlay" style="width:34px; justify-content:center; flex:0 0 auto">&#9654;</button>
+      <button class="view" id="tlPlay" style="width:34px; justify-content:center; flex:0 0 auto" title="Play / pause">&#9654;</button>
       <input type="range" id="tlScrub" min="0" max="1000" value="1000" style="flex:1">
+    </div>
+    <div style="display:flex; align-items:center; gap:6px">
+      <button class="view" id="tlLoop" style="flex:0 0 auto; justify-content:center" title="Loop playback">&#8635; Loop</button>
+      <button class="view" id="tlSpeed" style="flex:0 0 auto; width:40px; justify-content:center" title="Playback speed">1&times;</button>
+      <button class="view" id="tlExport" style="flex:1 1 auto; justify-content:center; border-color:#0e3050" title="Record a shareable WebM clip">&#9210; Export</button>
     </div>
     <div id="tlLabel" style="font-size:10px; color:#5a86a0; padding-top:1px"></div>
   </div>
@@ -202,7 +209,12 @@ let displayOpacity = 0.32;   // 0..1 — "Solidity" slider (1 = solid object)
 let smoothing = 0.5;         // 0..1 — "Smoothing" slider
 let tMin = 0, tMax = 0;      // timeline window bounds (epoch seconds)
 let playCut = 0;             // reveal cutoff: show points first seen at or before this
-let playing = false;
+let playing = false;         // a playback sweep is running
+let loopOn = false;          // loop toggle
+let playSpeed = 1;           // 0.5 / 1 / 2 / 4 — window sweeps per SWEEP_MS
+let reveal = null;           // active playback reveal object (per-mode) or null
+let preparing = false;       // building cone frames — block re-entry
+let recording = false;       // export in progress
 
 // Push the current Solidity value onto the live geometry without a rebuild.
 // Roles are tagged on each material so fill/surface, wireframe and points each
@@ -252,6 +264,23 @@ function activePoints() {
   // back from the end, show only points first heard at or before playCut.
   const timeOn = tMax > tMin && playCut < tMax;
   return DATA.points.filter(p => bands[bandOf(p[2])] && (!timeOn || p[3] <= playCut));
+}
+// Band filter only (all times). The playback reveal engines take the full set
+// and cut it by time themselves (draw-range / instance-count / frame index).
+function activePointsByBand() {
+  return DATA.points.filter(p => bands[bandOf(p[2])]);
+}
+// Count of sorted values <= x — the reveal cut for draw-range / instance-count.
+function upperBound(arr, x) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] <= x) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+function disposeGroup(g) {
+  g.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose());
+  });
 }
 
 // ---- render mode: point cloud ---------------------------------------------
@@ -467,8 +496,7 @@ function buildShell(pts) {
 }
 
 function rebuild() {
-  if (modeGroup) { scene.remove(modeGroup); modeGroup.traverse(o => {
-    if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); }
+  if (modeGroup) { scene.remove(modeGroup); disposeGroup(modeGroup); }
   const pts = activePoints();
   modeGroup = mode === 'points' ? buildPoints(pts)
             : mode === 'shell'  ? buildShell(pts)
@@ -565,12 +593,32 @@ function initScene(data) {
     stats() {
       let pts = 0, inst = 0, tris = 0;
       modeGroup && modeGroup.traverse(o => {
-        if (o.isPoints) pts += o.geometry.attributes.position.count;
+        if (o.isPoints) pts += (o.geometry.drawRange.count === Infinity
+          ? o.geometry.attributes.position.count : o.geometry.drawRange.count);
         if (o.isInstancedMesh) inst += o.count;
-        if (o.isMesh && o.geometry.index) tris += o.geometry.index.count / 3;
+        if (o.isMesh && o.geometry.index && o.visible) tris += o.geometry.index.count / 3;
       });
-      return { mode, points: pts, instances: inst, triangles: tris,
-               drawCalls: renderer.info.render.calls };
+      return { mode, playing, reveal: !!reveal, points: pts, instances: inst,
+               triangles: tris, drawCalls: renderer.info.render.calls,
+               renderedTris: renderer.info.render.triangles };
+    },
+    // timeline test helpers (headless verification)
+    get t() { return { tMin, tMax, playCut }; },
+    seek(frac) {   // static reveal at a fraction of the window
+      this.freeze(); playCut = tMin + Math.max(0, Math.min(1, frac)) * (tMax - tMin);
+      rebuild(); setScrub(); timelineLabel(); renderer.render(scene, camera); return this.stats();
+    },
+    play(opts) { startPlayback(opts || {}); },
+    stop() { stopPlayback(playCut); this.freeze(); return this.stats(); },
+    // Drive the active reveal to a fraction of the window without relying on rAF
+    // (rAF is paused in a background tab) — for headless correctness checks.
+    revealSet(frac) {
+      if (!reveal) return { error: 'not playing' };
+      this.freeze();
+      playCut = tMin + Math.max(0, Math.min(1, frac)) * (tMax - tMin);
+      reveal.set(playCut); setScrub(); timelineLabel();
+      renderer.render(scene, camera);
+      return this.stats();
     },
   };
 }
@@ -583,44 +631,227 @@ function updateMeta(d) {
 }
 
 // ---- timeline (coverage-over-window playback) ------------------------------
+// The scrubber (paused) reveals coverage up to playCut through the normal static
+// rebuild path (activePoints() time-filters). Pressing play swaps in a per-mode
+// "reveal" object that can move the cut every frame with no geometry rebuild, so
+// the sweep stays at 60 fps:
+//   points  — one geometry, vertices sorted by first-seen time; cut = drawRange
+//   voxel   — one InstancedMesh, cells ordered by first-seen time; cut = count
+//   cone    — the surface reshapes with the point set, so precompute F frames
+//             once and swap the visible one by index.
+const SWEEP_MS = 15000;          // wall-clock ms to sweep the whole window at 1x
 const clock = e => new Date(e*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-function timelineLabel() {
-  if (tMax <= tMin) return '';
+const _tlLabel = () => document.getElementById('tlLabel');
+function timelineLabel(text) {
+  if (text !== undefined) { _tlLabel().textContent = text; return; }
+  if (tMax <= tMin) { _tlLabel().textContent = ''; return; }
   const span = ((tMax - tMin)/3600).toFixed(1);
-  return playCut >= tMax
-    ? 'full window — ' + clock(tMin) + '–' + clock(tMax) + ' (' + span + ' h)'
-    : clock(playCut) + '  ·  +' + ((playCut - tMin)/3600).toFixed(1) + ' h of ' + span + ' h';
+  _tlLabel().textContent = playCut >= tMax
+    ? 'full window · ' + clock(tMin) + '–' + clock(tMax) + ' (' + span + ' h)'
+    : clock(playCut) + '  ·  +' + ((playCut - tMin)/3600).toFixed(1) + ' / ' + span + ' h';
+}
+function setScrub() {
+  if (tMax > tMin) document.getElementById('tlScrub').value = Math.round(((playCut - tMin)/(tMax - tMin)) * 1000);
 }
 function setupTimeline(d) {
+  stopPlayback(null, true);
   tMin = d.t_min || 0; tMax = d.t_max || 0; playCut = tMax;
   const has = tMax > tMin;
   document.getElementById('tlSec').style.display = has ? '' : 'none';
   document.getElementById('tlCtl').style.display = has ? '' : 'none';
   document.getElementById('tlScrub').value = 1000;
-  document.getElementById('tlPlay').innerHTML = '&#9654;';
-  playing = false;
-  document.getElementById('tlLabel').textContent = timelineLabel();
+  timelineLabel();
 }
-let _playLast = 0, _lastTLRebuild = 0;
-const PLAY_MS = 18000;   // wall-clock seconds to sweep the whole window
-function playStep(ts) {
-  if (!playing) return;
-  const dt = _playLast ? ts - _playLast : 16; _playLast = ts;
-  const span = tMax - tMin;
-  playCut = Math.min(tMax, playCut + span * (dt / PLAY_MS));
-  document.getElementById('tlScrub').value = Math.round(((playCut - tMin)/span) * 1000);
-  document.getElementById('tlLabel').textContent = timelineLabel();
-  if (ts - _lastTLRebuild > 110) { _lastTLRebuild = ts; rebuild(); }  // ~9 fps geometry
-  if (playCut >= tMax) { playing = false; document.getElementById('tlPlay').innerHTML = '&#9654;'; rebuild(); return; }
-  requestAnimationFrame(playStep);
+
+// ---- per-mode reveal builders ---------------------------------------------
+// Points: draw the earliest-K points. Sorting by first-seen time means "coverage
+// up to cut" is just the contiguous prefix drawRange(0, K) — stock material, so
+// the look is identical to the static point cloud.
+function buildPointsReveal(pts) {
+  const sorted = pts.slice().sort((a, b) => (a[3]||0) - (b[3]||0));
+  const group = buildPoints(sorted);
+  const geo = group.children[0] && group.children[0].geometry;
+  const times = new Float64Array(sorted.length);
+  for (let i = 0; i < sorted.length; i++) times[i] = sorted[i][3] || 0;
+  return { group, set(cut) { if (geo) geo.setDrawRange(0, upperBound(times, cut)); } };
+}
+// Voxel: aggregate into cells (as buildVoxels), tag each cell with its earliest
+// point time, and lay the instances out in that time order. Revealing coverage
+// up to cut is then just mesh.count = K. Cells pop in at their final brightness
+// in chronological order — cheap and continuous; pausing snaps to the accurate
+// count-shaded static volume.
+function buildVoxelsReveal(pts) {
+  const group = new THREE.Group();
+  if (!pts.length) return { group, set() {} };
+  const CELL = 5 + smoothing * 6, ALT_CELL = 1500 + smoothing * 1500;
+  const cells = new Map();
+  for (const [b, d, a, t] of pts) {
+    const [x, , z] = toXYZ(b, d, a);
+    const gx = Math.round(x / CELL), gz = Math.round(z / CELL), gy = Math.floor((a||0) / ALT_CELL);
+    const key = gx + ',' + gy + ',' + gz;
+    let c = cells.get(key);
+    if (!c) { c = { gx, gy, gz, n: 0, asum: 0, t: t || Infinity }; cells.set(key, c); }
+    c.n++; c.asum += (a||0); if ((t||Infinity) < c.t) c.t = t;
+  }
+  const arr = [...cells.values()].sort((p, q) => p.t - q.t);
+  let maxN = 1; for (const c of arr) if (c.n > maxN) maxN = c.n;
+  const logMax = Math.log(maxN + 1);
+  const fill = 0.9 + smoothing * 0.35;
+  const box = new THREE.BoxGeometry(CELL*fill, ALT_CELL*ALT_SCALE*fill, CELL*fill);
+  const mat = new THREE.MeshLambertMaterial({
+    transparent: true, opacity: displayOpacity, depthWrite: displayOpacity > 0.82 });
+  const mesh = new THREE.InstancedMesh(box, mat, arr.length);
+  mesh.userData.role = 'voxel';
+  const m = new THREE.Matrix4(), color = new THREE.Color();
+  const times = new Float64Array(arr.length);
+  arr.forEach((c, i) => {
+    m.setPosition(c.gx*CELL, (c.gy+0.5)*ALT_CELL*ALT_SCALE, c.gz*CELL); mesh.setMatrixAt(i, m);
+    const bright = 0.45 + 0.55 * (Math.log(c.n + 1) / logMax);
+    const [r, gr, bl] = altColor(c.asum / c.n); color.setRGB(r*bright, gr*bright, bl*bright); mesh.setColorAt(i, color);
+    times[i] = c.t === Infinity ? tMax : c.t;
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  group.add(mesh);
+  return { group, set(cut) { mesh.count = upperBound(times, cut); } };
+}
+// Cone: the coverage-floor surface genuinely depends on which points are in, so
+// there's no cheap threshold — precompute F surfaces spanning the window once,
+// then swap the visible one by index. Built with a yield every few frames so the
+// UI (and the preparing-% label) stays responsive.
+function coneFrameCount(n) { return n > 260000 ? 44 : 60; }
+async function buildConeReveal(pts, onProgress) {
+  const group = new THREE.Group();
+  const F = coneFrameCount(pts.length), span = tMax - tMin;
+  const frames = [];
+  for (let i = 0; i < F; i++) {
+    const cut = tMin + (span * i) / (F - 1);
+    const fg = buildShell(pts.filter(p => (p[3]||0) <= cut));
+    fg.visible = false; group.add(fg); frames.push(fg);
+    if (onProgress) onProgress((i + 1) / F);
+    if ((i & 7) === 7) await new Promise(r => setTimeout(r));   // yield the main thread
+  }
+  let curr = -1;
+  return { group, set(cut) {
+    const idx = Math.max(0, Math.min(F - 1, Math.round(((cut - tMin) / span) * (F - 1))));
+    if (idx !== curr) { if (curr >= 0) frames[curr].visible = false; frames[idx].visible = true; curr = idx; }
+  } };
+}
+
+// ---- playback control ------------------------------------------------------
+async function startPlayback(opts = {}) {
+  if (reveal || preparing || tMax <= tMin) return;
+  const playBtn = document.getElementById('tlPlay');
+  const pts = activePointsByBand();
+  let rev;
+  if (mode === 'points')      rev = buildPointsReveal(pts);
+  else if (mode === 'voxel')  rev = buildVoxelsReveal(pts);
+  else {
+    preparing = true; playBtn.disabled = true;
+    rev = await buildConeReveal(pts, p => timelineLabel('preparing frames… ' + Math.round(p * 100) + '%'));
+    preparing = false; playBtn.disabled = false;
+    if (opts.cancelled && opts.cancelled()) { disposeGroup(rev.group); return; }
+  }
+  // Swap the static geometry for the reveal object; keep modeGroup pointed at it
+  // so Solidity / view buttons keep working.
+  if (modeGroup) { scene.remove(modeGroup); disposeGroup(modeGroup); }
+  modeGroup = rev.group; scene.add(modeGroup); applyOpacity();
+  reveal = rev; reveal.loopFixed = opts.loop;   // undefined -> follow live loopOn
+  playing = true; playBtn.innerHTML = '&#10073;&#10073;';   // ‖
+  playCut = tMin; reveal.set(playCut); setScrub(); timelineLabel();
+
+  let last = 0;
+  function step(ts) {
+    if (!reveal || !playing) return;
+    const dt = last ? ts - last : 16; last = ts;
+    playCut = Math.min(tMax, playCut + (tMax - tMin) * (dt / (SWEEP_MS / playSpeed)));
+    reveal.set(playCut); setScrub(); timelineLabel();
+    if (playCut >= tMax) {
+      const loop = reveal.loopFixed !== undefined ? reveal.loopFixed : loopOn;
+      if (loop) { playCut = tMin; last = 0; requestAnimationFrame(step); }
+      else { stopPlayback(tMax); if (opts.onEnd) opts.onEnd(); }
+      return;
+    }
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+// Tear down the reveal object and snap back to the accurate static geometry at
+// snapCut. silent=true skips the static rebuild (caller rebuilds itself).
+function stopPlayback(snapCut, silent) {
+  playing = false;
+  const playBtn = document.getElementById('tlPlay');
+  if (playBtn) { playBtn.innerHTML = '&#9654;'; playBtn.disabled = false; }
+  if (reveal) {
+    if (modeGroup === reveal.group) { scene.remove(modeGroup); modeGroup = null; }
+    disposeGroup(reveal.group);
+    reveal = null;
+  }
+  if (snapCut !== null && snapCut !== undefined) { playCut = snapCut; setScrub(); }
+  if (!silent) { rebuild(); timelineLabel(); }
 }
 function togglePlay() {
-  const btn = document.getElementById('tlPlay');
-  if (playing) { playing = false; btn.innerHTML = '&#9654;'; return; }
-  if (playCut >= tMax) playCut = tMin;   // restart from the beginning
-  playing = true; _playLast = 0; _lastTLRebuild = 0;
-  btn.innerHTML = '&#10073;&#10073;';    // ‖
-  requestAnimationFrame(playStep);
+  if (preparing || recording) return;
+  if (playing || reveal) { stopPlayback(playCut); return; }
+  startPlayback();
+}
+// Any change that alters the point set or geometry must drop out of playback
+// first; the caller then rebuilds the static view.
+function endPlaybackForEdit() { if (reveal || playing) stopPlayback(playCut, true); }
+
+// ---- export: record a play-through to a shareable WebM ---------------------
+function exportSupported() {
+  return !!(window.MediaRecorder && renderer.domElement.captureStream);
+}
+function pickMime() {
+  for (const m of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'])
+    if (MediaRecorder.isTypeSupported(m)) return m;
+  return '';
+}
+async function exportClip() {
+  const btn = document.getElementById('tlExport');
+  if (recording || preparing) return;
+  if (!exportSupported()) { btn.textContent = '✕ unsupported'; return; }
+  recording = true; endPlaybackForEdit();
+  btn.disabled = true; document.getElementById('tlPlay').disabled = true;
+  const stream = renderer.domElement.captureStream(30);
+  const mime = pickMime();
+  const rec = new MediaRecorder(stream, mime
+    ? { mimeType: mime, videoBitsPerSecond: 8_000_000 }
+    : { videoBitsPerSecond: 8_000_000 });
+  const chunks = [];
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  const stopped = new Promise(res => { rec.onstop = res; });
+  const prevAuto = controls.autoRotate, prevSpeed = controls.autoRotateSpeed;
+  controls.autoRotate = true; controls.autoRotateSpeed = 0.6;   // gentle orbit for the clip
+  btn.textContent = '● recording…';
+  try {
+    rec.start(100);
+    // Resolve on natural end, or a wall-clock safety cap so the recorder can't
+    // hang if the tab is backgrounded mid-capture (rAF — and the sweep — pause).
+    const cap = SWEEP_MS / playSpeed + 6000;
+    await new Promise(res => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; res(); } };
+      startPlayback({ loop: false, onEnd: finish });
+      setTimeout(finish, cap);
+    });
+    await new Promise(r => setTimeout(r, 500));   // hold the completed coverage a beat
+  } finally {
+    if (reveal || playing) stopPlayback(playCut, true);
+    if (rec.state !== 'inactive') rec.stop();
+    await stopped;
+    controls.autoRotate = prevAuto; controls.autoRotateSpeed = prevSpeed;
+  }
+  const blob = new Blob(chunks, { type: 'video/webm' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'adsbvue-coverage-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.webm';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  recording = false; btn.disabled = false; document.getElementById('tlPlay').disabled = false;
+  btn.innerHTML = '&#9210; Export';
 }
 
 function wireUI() {
@@ -635,6 +866,8 @@ function wireUI() {
 
   document.querySelectorAll('button[data-mode]').forEach(btn => {
     btn.addEventListener('click', () => {
+      if (recording || preparing) return;
+      endPlaybackForEdit();
       mode = btn.dataset.mode;
       document.querySelectorAll('button[data-mode]').forEach(b => b.classList.toggle('on', b === btn));
       rebuild();
@@ -652,9 +885,11 @@ function wireUI() {
   const sm = document.getElementById('smooth'), smVal = document.getElementById('smVal');
   let smTimer = null;
   sm.addEventListener('input', () => {
+    if (recording || preparing) return;
     smoothing = sm.value / 100;
     smVal.textContent = smoothing < 0.2 ? 'crisp' : smoothing < 0.45 ? 'low'
                       : smoothing < 0.7 ? 'medium' : smoothing < 0.9 ? 'high' : 'max';
+    endPlaybackForEdit();
     clearTimeout(smTimer);
     smTimer = setTimeout(rebuild, 140);
   });
@@ -662,16 +897,38 @@ function wireUI() {
   const scrub = document.getElementById('tlScrub');
   let scrubTimer = null;
   scrub.addEventListener('input', () => {
-    if (playing) togglePlay();                    // dragging stops playback
+    if (recording || preparing) { setScrub(); return; }
+    endPlaybackForEdit();                          // dragging stops playback
     playCut = tMin + (scrub.value / 1000) * (tMax - tMin);
-    document.getElementById('tlLabel').textContent = timelineLabel();
+    timelineLabel();
     clearTimeout(scrubTimer);
     scrubTimer = setTimeout(rebuild, 60);
   });
   document.getElementById('tlPlay').addEventListener('click', togglePlay);
+  // Loop toggle.
+  const loopBtn = document.getElementById('tlLoop');
+  loopBtn.addEventListener('click', () => {
+    if (recording) return;
+    loopOn = !loopOn; loopBtn.classList.toggle('on', loopOn);
+    if (reveal) reveal.loopFixed = undefined;      // let a running sweep follow the toggle
+  });
+  // Speed cycle 0.5 → 1 → 2 → 4×.
+  const speedBtn = document.getElementById('tlSpeed');
+  const SPEEDS = [0.5, 1, 2, 4];
+  speedBtn.addEventListener('click', () => {
+    if (recording) return;
+    playSpeed = SPEEDS[(SPEEDS.indexOf(playSpeed) + 1) % SPEEDS.length];
+    speedBtn.innerHTML = playSpeed + '&times;';
+  });
+  // Export a WebM clip of the play-through.
+  const exportBtn = document.getElementById('tlExport');
+  if (exportSupported()) exportBtn.addEventListener('click', exportClip);
+  else { exportBtn.disabled = true; exportBtn.title = 'Recording needs a Chromium/Firefox browser'; }
 
   document.querySelectorAll('button[data-band]').forEach(btn => {
     btn.addEventListener('click', () => {
+      if (recording || preparing) return;
+      endPlaybackForEdit();
       const b = btn.dataset.band; bands[b] = !bands[b];
       btn.classList.toggle('on', bands[b]); rebuild();
     });
@@ -687,9 +944,11 @@ function wireUI() {
   });
   document.getElementById('vRefresh').addEventListener('click', () => {
     const btn = document.getElementById('vRefresh');
+    if (recording || preparing) return;
+    endPlaybackForEdit();
     btn.textContent = '⟳ Refreshing…'; btn.disabled = true;
     fetch('/cone?refresh=true').then(r => r.json()).then(d => {
-      DATA = d; rebuild(); updateMeta(d); setupTimeline(d);
+      DATA = d; setupTimeline(d); rebuild(); updateMeta(d);
       document.getElementById('cacheInfo').textContent = 'Live — fetched ' + new Date().toLocaleTimeString();
       btn.textContent = '↻ Refresh data'; btn.disabled = false;
     }).catch(e => { btn.textContent = '✕ ' + e.message; btn.disabled = false; });
