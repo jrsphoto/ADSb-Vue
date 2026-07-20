@@ -12,9 +12,11 @@ services:
     image: adsbvue:latest
     container_name: adsbvue
     network_mode: host
-    # Configure inline here, or copy .env.example -> .env and uncomment env_file.
-    # (See .env.example for every ADSB_* option.)
-    # env_file: .env
+    # Two ways to configure — pick one (or mix; `environment:` wins over env_file):
+    #   A) inline, as below (works with no extra files), or
+    #   B) copy .env.example -> .env, delete this environment: block, and use:
+    #        env_file: .env
+    # See .env.example for every ADSB_* option.
     environment:
       - ADSB_ULTRAFEEDER=http://127.0.0.1
       - ADSB_PORT=24556

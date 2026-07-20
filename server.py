@@ -43,7 +43,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def _load_dotenv(path):
     """Zero-dependency .env loader: KEY=VALUE lines. A real environment variable
-    always wins over the file (setdefault), matching how docker-compose behaves."""
+    always wins over the file (setdefault), matching how docker-compose behaves.
+    Handles quoted values and a trailing ' # ...' inline comment."""
     try:
         with open(path) as fh:
             for line in fh:
@@ -51,7 +52,17 @@ def _load_dotenv(path):
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+                v = v.strip()
+                if v[:1] in ("'", '"'):                 # quoted: take the quoted span
+                    q = v[0]
+                    end = v.find(q, 1)
+                    v = v[1:end] if end != -1 else v[1:]
+                else:                                   # strip a " #" inline comment
+                    h = v.find(" #")
+                    if h != -1:
+                        v = v[:h]
+                    v = v.strip()
+                os.environ.setdefault(k.strip(), v)
     except FileNotFoundError:
         pass
 
