@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="adsbvue_logo.jpg" alt="ADSb-Vue — 3D Reception Volume & Analytics" width="640">
+  <img src="adsbvue_logo.png" alt="ADSb-Vue — 3D Reception Volume & Analytics" width="640">
 </p>
 
 # ADSb-Vue

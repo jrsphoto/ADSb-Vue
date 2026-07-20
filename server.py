@@ -233,13 +233,12 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/", "/view", "/index.html"):
                 with open(os.path.join(HERE, "index.html"), "rb") as fh:
                     self._send(200, fh.read(), "text/html; charset=utf-8")
-            elif path in ("/adsbvue_favicon.png", "/favicon.ico", "/adsbvue_logo.jpg"):
-                name = "adsbvue_logo.jpg" if path.endswith(".jpg") else "adsbvue_favicon.png"
+            elif path in ("/adsbvue_favicon.png", "/favicon.ico", "/adsbvue_logo.png"):
+                name = "adsbvue_logo.png" if path.endswith("logo.png") else "adsbvue_favicon.png"
                 fp = os.path.join(HERE, name)
                 if os.path.exists(fp):
                     with open(fp, "rb") as fh:
-                        ct = "image/jpeg" if name.endswith(".jpg") else "image/png"
-                        self._send(200, fh.read(), ct, gz_ok=False)
+                        self._send(200, fh.read(), "image/png", gz_ok=False)
                 else:
                     self._send(404, b"", "application/octet-stream")
             elif path in ("/cone", "/data"):
