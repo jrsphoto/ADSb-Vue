@@ -90,6 +90,33 @@ input[type=range]::-moz-range-thumb {
 #ui { transition: transform 0.24s ease, opacity 0.24s ease; z-index: 20; }
 #ui.collapsed { transform: translateX(-115%); opacity: 0; pointer-events: none; }
 
+/* --- terrain help overlay (on-demand; no permanent screen cost) --- */
+#helpOverlay {
+  position: fixed; inset: 0; z-index: 50; display: none;
+  align-items: center; justify-content: center; padding: 16px;
+  background: rgba(3,6,11,0.72); backdrop-filter: blur(3px);
+}
+#helpOverlay.open { display: flex; }
+#helpCard {
+  position: relative; background: #0a1119; border: 1px solid #14324a;
+  border-radius: 10px; width: 100%; max-width: 440px; max-height: 84vh;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 18px 20px; color: #6a9ab4; font-size: 12px; line-height: 1.6;
+}
+#helpCard h2 { font-size: 13px; color: #b0cee0; letter-spacing: 0.4px; margin-bottom: 6px; padding-right: 24px; }
+#helpCard h3 { font-size: 10px; color: #9fc6dd; text-transform: uppercase; letter-spacing: 0.9px; margin: 15px 0 6px; }
+#helpCard p { margin: 6px 0; }
+#helpCard b { color: #9fc6dd; font-weight: 500; }
+#helpCard .key { display: flex; align-items: flex-start; gap: 8px; margin: 5px 0; }
+#helpCard .key .sw { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+#helpClose {
+  position: absolute; top: 10px; right: 10px; width: 26px; height: 26px;
+  border-radius: 6px; border: 1px solid #1a3a54; background: transparent;
+  color: #7aaecc; font-size: 13px; cursor: pointer; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+#helpClose:hover { border-color: #2a5a7a; color: #b0cee0; }
+
 @media (max-width: 680px), (pointer: coarse) and (max-width: 900px) {
   #menuToggle { display: flex; }
   #ui {
@@ -99,6 +126,7 @@ input[type=range]::-moz-range-thumb {
   }
   #hint { display: none; }
   #legend { font-size: 9px; padding: 7px 10px; gap: 4px; }
+  #cmpLegend { font-size: 9px; padding: 7px 10px; gap: 4px; }
 }
 </style>
 </head>
@@ -139,6 +167,7 @@ input[type=range]::-moz-range-thumb {
   <div class="btns">
     <button class="view" id="compareBtn" title="Recolour the measured cone by how it compares to the terrain horizon">&#9681; Compare to horizon</button>
     <button class="view" id="terrainBtn" title="Line-of-sight horizon predicted from terrain + earth curvature">&#9650; Predicted horizon</button>
+    <button class="view" id="helpBtn" style="border-color:#123049; color:#3a6a84">? What am I seeing?</button>
     <div id="terrainInfo" style="font-size:10px; color:#1a3a50; line-height:1.5"></div>
   </div>
 
@@ -205,6 +234,40 @@ input[type=range]::-moz-range-thumb {
 <div id="hint">
   Drag to orbit &nbsp;&middot;&nbsp; Scroll to zoom<br>
   Right-drag to pan
+</div>
+
+<div id="helpOverlay">
+  <div id="helpCard">
+    <button id="helpClose" aria-label="Close">&#10005;</button>
+    <h2>Terrain &amp; the predicted horizon</h2>
+    <p><b>&#9650; Predicted horizon</b> draws the lowest altitude an aircraft can fly and
+      still be in your antenna's line of sight, given the terrain around you and the
+      earth's curvature. It's the physical limit your low-altitude coverage is measured
+      against &mdash; a smooth bowl that's ~ground level at the receiver and rises with distance.</p>
+
+    <h3>&#9681; Compare to horizon</h3>
+    <p>Recolours your measured detection cone by how it stacks up against that horizon:</p>
+    <div class="key"><span class="sw" style="background:rgb(51,204,71)"></span><span><b>green</b> &mdash; you hear low traffic right down to the horizon: confirmed good coverage.</span></div>
+    <div class="key"><span class="sw" style="background:rgb(235,41,31)"></span><span><b>red</b> &mdash; the lowest aircraft you heard sits higher than terrain says it should.</span></div>
+    <div class="key"><span class="sw" style="background:rgb(51,122,245)"></span><span><b>blue</b> &mdash; you heard something below the predicted horizon: over-performing.</span></div>
+    <div class="key"><span class="sw" style="background:rgb(41,48,61)"></span><span><b>grey</b> &mdash; only high traffic flew here, so low-altitude coverage can't be judged.</span></div>
+
+    <h3>How to read it</h3>
+    <p><b>Grey isn't bad.</b> You have coverage there &mdash; you're hearing aircraft &mdash; but
+      no low traffic came through to grade it against the horizon. Low-altitude performance
+      there is simply <i>unknown</i>, not poor.</p>
+    <p><b>Red is a clue, not a verdict.</b> It can mean a real gap (terrain or an obstruction
+      blocking you from hearing low), <i>or</i> just that the lowest plane that happened to fly
+      that way was still fairly high. From the top-down view you can't tell which.</p>
+    <p><b>Tip:</b> switch to the <b>side view</b> to see coverage as a bowl &mdash; the coloured
+      part near the centre is the low-altitude floor, the only region with enough data to
+      grade. Green usually traces your busy arrival/departure corridors.</p>
+
+    <h3>Antenna height</h3>
+    <p>The model needs your mast height above the ground; it reads your ground elevation from
+      the terrain automatically. Set it with <b>ADSB_ANTENNA_AGL_FT</b> (feet; default 30).
+      A taller antenna sees over more terrain and lowers the horizon.</p>
+  </div>
 </div>
 
 <script type="module">
@@ -987,6 +1050,14 @@ function wireUI() {
   });
   document.getElementById('terrainBtn').addEventListener('click', toggleTerrain);
   document.getElementById('compareBtn').addEventListener('click', toggleCompare);
+  // Terrain help overlay — on-demand, dismiss by ✕, backdrop, or Escape.
+  const help = document.getElementById('helpOverlay');
+  const openHelp = () => help.classList.add('open');
+  const closeHelp = () => help.classList.remove('open');
+  document.getElementById('helpBtn').addEventListener('click', openHelp);
+  document.getElementById('helpClose').addEventListener('click', closeHelp);
+  help.addEventListener('click', e => { if (e.target === help) closeHelp(); });
+  addEventListener('keydown', e => { if (e.key === 'Escape') closeHelp(); });
   document.getElementById('vNorth').addEventListener('click', () => {
     camera.up.set(1,0,0); camera.position.set(0,360,0); controls.target.set(0,0,0); controls.update();
   });

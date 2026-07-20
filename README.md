@@ -58,6 +58,7 @@ environment variables:
 | `ADSB_LOW_ALT_FT`  | `10000`              | "Low altitude" cutoff for the low-alt range stat (ft) |
 | `ADSB_FETCH_WORKERS`| `8`                 | Parallel chunk downloads (1 = serial; higher helps a remote feeder) |
 | `ADSB_CACHE_SECS`  | `120`                | Seconds to cache parsed observations      |
+| `ADSB_ANTENNA_AGL_FT`| `30`               | Antenna height above ground (ft) for the terrain horizon model |
 
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.
 Raise `ADSB_MAX_CHUNKS` (e.g. `0`) for the fullest envelope at the cost of a
@@ -129,6 +130,40 @@ The server serves it at `/cities`; only entries within range of the receiver are
 drawn. If the file is absent, the built-in defaults are used. Under Docker, create
 `cities.local.json` in the repo folder *before* `docker compose up --build` — the
 Dockerfile copies it into the image at build time (rebuild after editing it).
+
+## Terrain — predicted vs. measured coverage
+
+Under **Terrain** in the panel, the viewer can compare what you *actually hear*
+against what the surrounding terrain physically *lets* you hear. It's optional and
+loads open elevation tiles in the browser on demand; if they can't be reached, the
+rest of the app is unaffected. (There's also a **"? What am I seeing?"** button in
+that section with the same explanation in-app.)
+
+**▲ Predicted horizon** draws the lowest altitude an aircraft can fly and still be
+in your antenna's line of sight, given the terrain around you and the earth's
+curvature — a smooth bowl that's ~ground level at the receiver and rises with
+distance. Set your mast height with `ADSB_ANTENNA_AGL_FT` (feet; the ground
+elevation is read from the terrain automatically). A taller antenna sees over more
+terrain and lowers the horizon.
+
+**◑ Compare to horizon** recolours your measured detection cone by how it stacks
+up against that horizon:
+
+- **green** — you hear low traffic right down to the horizon: confirmed good coverage.
+- **red** — the lowest aircraft you heard sits higher than terrain says it should.
+- **blue** — you heard something *below* the predicted horizon: over-performing.
+- **grey** — only high traffic flew here, so low-altitude coverage can't be judged.
+
+Two things to keep in mind when reading it:
+
+- **Grey isn't bad.** You still have coverage there — you're hearing aircraft — but
+  no *low* traffic came through to grade it, so low-altitude performance is simply
+  *unknown*, not poor. The comparison only applies where the measured floor is below
+  ~18,000 ft (i.e. low traffic actually flew there).
+- **Red is a clue, not a verdict.** It can mean a real gap (terrain or an obstruction
+  blocking you), *or* just that the lowest plane that flew that way happened to be
+  fairly high. The **side view** helps: the coloured region near the centre is the
+  low-altitude floor, and green usually traces your busy arrival/departure corridors.
 
 ## Endpoints
 
