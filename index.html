@@ -1075,7 +1075,10 @@ async function loadStateMap(data) {
   const dotMat = new THREE.MeshBasicMaterial({ color: 0xbfe4ff });
   for (const [name, lat, lon] of cities) {
     const p = geoToXZ(lon, lat);
-    if (Math.hypot(p.x, p.z) > 270) continue;   // beyond range rings
+    if (Math.hypot(p.x, p.z) > 500) continue;   // ~500 nm cap: keeps out-of-range
+                                                 // reference cities (e.g. a friend's
+                                                 // town) visible outside the dome,
+                                                 // while still ignoring wild typos
     const dot = new THREE.Mesh(dotGeo, dotMat); dot.position.copy(p); dot.position.y = 0.5;
     scene.add(dot);
     const lbl = textSprite(name, '#bfe4ff');
