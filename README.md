@@ -150,7 +150,7 @@ terrain and lowers the horizon.
 up against that horizon:
 
 - **green** — you hear low traffic right down to the horizon: confirmed good coverage.
-- **red** — the lowest aircraft you heard sits higher than terrain says it should.
+- **amber** — the lowest aircraft you heard sits higher than terrain says it should.
 - **blue** — you heard something *below* the predicted horizon: over-performing.
 - **grey** — only high traffic flew here, so low-altitude coverage can't be judged.
 
@@ -160,10 +160,12 @@ Two things to keep in mind when reading it:
   no *low* traffic came through to grade it, so low-altitude performance is simply
   *unknown*, not poor. The comparison only applies where the measured floor is below
   ~18,000 ft (i.e. low traffic actually flew there).
-- **Red is a clue, not a verdict.** It can mean a real gap (terrain or an obstruction
+- **Amber is a clue, not a verdict.** It can mean a real gap (terrain or an obstruction
   blocking you), *or* just that the lowest plane that flew that way happened to be
-  fairly high. The **side view** helps: the coloured region near the centre is the
-  low-altitude floor, and green usually traces your busy arrival/departure corridors.
+  fairly high — which is why it's understated rather than alarm-red. Click a direction
+  to open a **bearing profile** (terrain, horizon, and the actual hits along that
+  bearing) to tell the two apart; green usually traces your busy arrival/departure
+  corridors.
 
 ## Endpoints
 

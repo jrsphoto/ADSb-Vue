@@ -117,6 +117,30 @@ input[type=range]::-moz-range-thumb {
 }
 #helpClose:hover { border-color: #2a5a7a; color: #b0cee0; }
 
+/* --- M3 per-bearing profile (bottom drawer) --- */
+#profilePanel {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: none;
+  background: rgba(6,9,15,0.92); border-top: 1px solid #14324a;
+  backdrop-filter: blur(4px); padding: 8px 12px 6px;
+}
+#profileHdr {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  font-size: 11px; color: #6a9ab4; margin-bottom: 4px;
+}
+#profileHdr b { color: #b0cee0; font-weight: 500; }
+#profileClose {
+  margin-left: auto; width: 24px; height: 24px; border-radius: 6px;
+  border: 1px solid #1a3a54; background: transparent; color: #7aaecc;
+  font-size: 12px; cursor: pointer; padding: 0; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+#profileClose:hover { border-color: #2a5a7a; color: #b0cee0; }
+#profileSvg { width: 100%; height: 190px; }
+#profileSvg svg { display: block; }
+@media (max-width: 680px), (pointer: coarse) and (max-width: 900px) {
+  #profileHdr span:last-of-type { display: none; }   /* hide the desktop hint */
+}
+
 @media (max-width: 680px), (pointer: coarse) and (max-width: 900px) {
   #menuToggle { display: flex; }
   #ui {
@@ -167,6 +191,7 @@ input[type=range]::-moz-range-thumb {
   <div class="btns">
     <button class="view" id="compareBtn" title="Recolour the measured cone by how it compares to the terrain horizon">&#9681; Compare to horizon</button>
     <button class="view" id="terrainBtn" title="Line-of-sight horizon predicted from terrain + earth curvature">&#9650; Predicted horizon</button>
+    <button class="view" id="profileBtn" title="Side-on profile of one bearing: terrain, horizon and the actual hits">&#8944; Bearing profile</button>
     <button class="view" id="helpBtn" style="border-color:#123049; color:#3a6a84">? What am I seeing?</button>
     <div id="terrainInfo" style="font-size:10px; color:#1a3a50; line-height:1.5"></div>
   </div>
@@ -225,7 +250,7 @@ input[type=range]::-moz-range-thumb {
   background:rgba(6,9,15,0.75); border:1px solid #0e2a40; border-radius:7px;
   padding:9px 13px; font-size:10px; color:#3a6070; flex-direction:column; gap:5px; backdrop-filter:blur(4px)">
   <div class="li"><span class="ld" style="background:rgb(51,204,71); border-radius:50%"></span> matches horizon</div>
-  <div class="li"><span class="ld" style="background:rgb(235,41,31); border-radius:50%"></span> higher than terrain allows</div>
+  <div class="li"><span class="ld" style="background:rgb(219,140,41); border-radius:50%"></span> less low than predicted</div>
   <div class="li"><span class="ld" style="background:rgb(51,122,245); border-radius:50%"></span> below the horizon</div>
   <div class="li"><span class="ld" style="background:rgb(41,48,61); border-radius:50%"></span> no low-altitude traffic</div>
   <div style="color:#2a4a5a; max-width:158px; line-height:1.4">only judged where low traffic flew (&lt;18k ft measured)</div>
@@ -234,6 +259,19 @@ input[type=range]::-moz-range-thumb {
 <div id="hint">
   Drag to orbit &nbsp;&middot;&nbsp; Scroll to zoom<br>
   Right-drag to pan
+</div>
+
+<div id="profilePanel">
+  <div id="profileHdr">
+    <span id="profileLabel"></span>
+    <span style="flex:1; display:flex; align-items:center; gap:7px; min-width:120px">
+      <span style="color:#2a4a5a; font-size:10px">bearing</span>
+      <input type="range" id="profileBrg" min="0" max="359" value="0" style="flex:1">
+    </span>
+    <span style="color:#2a4a5a; font-size:10px">click the map to pick a direction</span>
+    <button id="profileClose" aria-label="Close">&#10005;</button>
+  </div>
+  <div id="profileSvg"></div>
 </div>
 
 <div id="helpOverlay">
@@ -248,7 +286,7 @@ input[type=range]::-moz-range-thumb {
     <h3>&#9681; Compare to horizon</h3>
     <p>Recolours your measured detection cone by how it stacks up against that horizon:</p>
     <div class="key"><span class="sw" style="background:rgb(51,204,71)"></span><span><b>green</b> &mdash; you hear low traffic right down to the horizon: confirmed good coverage.</span></div>
-    <div class="key"><span class="sw" style="background:rgb(235,41,31)"></span><span><b>red</b> &mdash; the lowest aircraft you heard sits higher than terrain says it should.</span></div>
+    <div class="key"><span class="sw" style="background:rgb(219,140,41)"></span><span><b>amber</b> &mdash; the lowest aircraft you heard sits higher than terrain says it should.</span></div>
     <div class="key"><span class="sw" style="background:rgb(51,122,245)"></span><span><b>blue</b> &mdash; you heard something below the predicted horizon: over-performing.</span></div>
     <div class="key"><span class="sw" style="background:rgb(41,48,61)"></span><span><b>grey</b> &mdash; only high traffic flew here, so low-altitude coverage can't be judged.</span></div>
 
@@ -256,12 +294,20 @@ input[type=range]::-moz-range-thumb {
     <p><b>Grey isn't bad.</b> You have coverage there &mdash; you're hearing aircraft &mdash; but
       no low traffic came through to grade it against the horizon. Low-altitude performance
       there is simply <i>unknown</i>, not poor.</p>
-    <p><b>Red is a clue, not a verdict.</b> It can mean a real gap (terrain or an obstruction
+    <p><b>Amber is a clue, not a verdict.</b> It can mean a real gap (terrain or an obstruction
       blocking you from hearing low), <i>or</i> just that the lowest plane that happened to fly
-      that way was still fairly high. From the top-down view you can't tell which.</p>
+      that way was still fairly high &mdash; which is why it's understated, not an alarm. From
+      the top-down view you can't tell which; the per-bearing profile below can.</p>
     <p><b>Tip:</b> switch to the <b>side view</b> to see coverage as a bowl &mdash; the coloured
       part near the centre is the low-altitude floor, the only region with enough data to
       grade. Green usually traces your busy arrival/departure corridors.</p>
+
+    <h3>&#8944; Bearing profile</h3>
+    <p>Opens a side-on slice along one direction: the <b>terrain</b> going outward, the
+      <b style="color:#8fe8ff">horizon line</b>, and the <b>actual aircraft hits</b>. Pick a
+      direction with the slider or by clicking the map. It's the way to settle an amber patch
+      &mdash; if hits sit right down on the horizon line you have good low coverage there; if
+      the low region is simply empty, no low traffic came through (not a gap).</p>
 
     <h3>Antenna height</h3>
     <p>The model needs your mast height above the ground; it reads your ground elevation from
@@ -669,6 +715,7 @@ function initScene(data) {
   addEventListener('resize', () => {
     camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
+    if (profileOpen) renderProfile();
   });
 
   document.getElementById('loading').style.display = 'none';
@@ -1057,7 +1104,24 @@ function wireUI() {
   document.getElementById('helpBtn').addEventListener('click', openHelp);
   document.getElementById('helpClose').addEventListener('click', closeHelp);
   help.addEventListener('click', e => { if (e.target === help) closeHelp(); });
-  addEventListener('keydown', e => { if (e.key === 'Escape') closeHelp(); });
+  addEventListener('keydown', e => { if (e.key === 'Escape') { closeHelp(); if (profileOpen) closeProfile(); } });
+
+  // Bearing profile: button opens it; slider or a map-click picks the direction.
+  document.getElementById('profileBtn').addEventListener('click', openProfile);
+  document.getElementById('profileClose').addEventListener('click', closeProfile);
+  document.getElementById('profileBrg').addEventListener('input', e => setProfileBearing(+e.target.value));
+  // Click (not drag) on the 3D view picks the bearing via the ground plane.
+  const _ray = new THREE.Raycaster(), _ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), _hit = new THREE.Vector3();
+  let _down = null;
+  renderer.domElement.addEventListener('pointerdown', e => { _down = [e.clientX, e.clientY]; });
+  renderer.domElement.addEventListener('pointerup', e => {
+    if (!profileOpen || !_down) { _down = null; return; }
+    const moved = Math.hypot(e.clientX - _down[0], e.clientY - _down[1]); _down = null;
+    if (moved > 6) return;   // it was an orbit drag, not a pick
+    const rect = renderer.domElement.getBoundingClientRect();
+    _ray.setFromCamera({ x: ((e.clientX-rect.left)/rect.width)*2-1, y: -((e.clientY-rect.top)/rect.height)*2+1 }, camera);
+    if (_ray.ray.intersectPlane(_ground, _hit)) setProfileBearing(Math.atan2(_hit.z, _hit.x) * 180 / Math.PI);
+  });
   document.getElementById('vNorth').addEventListener('click', () => {
     camera.up.set(1,0,0); camera.position.set(0,360,0); controls.target.set(0,0,0); controls.update();
   });
@@ -1370,13 +1434,20 @@ function predictedFloorAt(brgDeg, rNm) {
 // measured - predicted delta -> colour. 0 = green (matches), + = red (worse than
 // terrain allows), - = blue (hearing below the predicted horizon).
 const _lerp3 = (a, b, t) => [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t, a[2] + (b[2]-a[2])*t];
-const C_MATCH = [0.20, 0.80, 0.28], C_WORSE = [0.92, 0.16, 0.12], C_BEAT = [0.20, 0.48, 0.96];
+const C_MATCH = [0.20, 0.80, 0.28], C_WORSE = [0.86, 0.55, 0.16], C_BEAT = [0.20, 0.48, 0.96];
 const C_NODATA = [0.16, 0.19, 0.24];   // no low-altitude traffic here to judge
-const DELTA_FULL_FT = 6000;    // delta at which the colour saturates
+// The "worse than predicted" side is deliberately understated: it's amber, not
+// alarm-red (it's an ambiguous clue, not a verdict), it needs a wide gap to
+// saturate, and small gaps read as a match. Green/blue — the provable signals —
+// stay vivid so the eye leads with what's actually confirmed.
+const DELTA_DEAD_FT = 2000;    // |delta| within this = "matches" (model/measure noise)
+const DELTA_FULL_FT = 9000;    // additional gap beyond the dead zone to fully saturate
 const COMPARE_CEIL_FT = 18000; // only compare where the measured floor is this low
                                // (i.e. low traffic actually flew there to measure)
 function deltaColor(dFt) {
-  const t = Math.max(-1, Math.min(1, dFt / DELTA_FULL_FT));
+  if (Math.abs(dFt) <= DELTA_DEAD_FT) return C_MATCH;   // close enough = match
+  const d = dFt > 0 ? dFt - DELTA_DEAD_FT : dFt + DELTA_DEAD_FT;
+  const t = Math.max(-1, Math.min(1, d / DELTA_FULL_FT));
   return t >= 0 ? _lerp3(C_MATCH, C_WORSE, t) : _lerp3(C_MATCH, C_BEAT, -t);
 }
 
@@ -1443,6 +1514,106 @@ async function toggleCompare() {
   } catch (e) {
     document.getElementById('terrainInfo').textContent = 'terrain failed: ' + (e.message || e);
   } finally { btn.innerHTML = '&#9681; Compare to horizon'; terrainBusy = false; btn.disabled = false; }
+}
+
+// ===== M3: per-bearing profile — terrain, horizon and the actual hits ========
+// The top-down compare can't tell a real gap from "no low traffic flew there".
+// A side-on profile along one bearing does: you see the predicted horizon line
+// and where aircraft were actually heard, so hits hugging the horizon = good
+// coverage, and an empty low region = genuinely no low traffic (not a gap).
+let profileOpen = false, profileBearing = 0, profileRay = null;
+const PROFILE_WEDGE = 1.5;   // ± degrees of hits to include in the slice
+const COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+const dirName = b => COMPASS[Math.round(((b % 360) + 360) % 360 / 22.5) % 16];
+
+function hitsAlongBearing(brg) {
+  const out = [];
+  for (const p of DATA.points) {
+    const d = Math.abs(((p[0] - brg + 540) % 360) - 180);   // angular distance
+    if (d <= PROFILE_WEDGE) out.push([p[1], p[2]]);           // [range nm, alt ft]
+  }
+  return out;
+}
+function renderProfile() {
+  const host = document.getElementById('profileSvg');
+  const W = Math.max(320, host.clientWidth || 900), H = 190;
+  const mL = 46, mR = 12, mT = 12, mB = 24, pw = W - mL - mR, ph = H - mT - mB;
+  const RMAX = DEM.RMAX_NM, brg = profileBearing;
+  const terr = [], hor = []; let maxHor = 0;
+  for (let r = 0; r <= RMAX; r += 2) {
+    const [la, lo] = destLL(DATA.recv_lat, DATA.recv_lon, brg, Math.max(0.01, r));
+    const em = elevM(la, lo); terr.push([r, em === em ? em * FT_PER_M : 0]);
+    const pf = predictedFloorAt(brg, r); hor.push([r, pf]); if (pf > maxHor) maxHor = pf;
+  }
+  const hits = hitsAlongBearing(brg);
+  let maxHit = 0; for (const h of hits) if (h[1] > maxHit) maxHit = h[1];
+  const YMAX = Math.min(46000, Math.max(15000, maxHor * 1.12, maxHit * 1.05));
+  const xOf = r => mL + (r / RMAX) * pw, yOf = a => mT + (1 - Math.min(a, YMAX) / YMAX) * ph;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">`;
+  for (let a = 0; a <= YMAX; a += 10000) {
+    const y = yOf(a);
+    s += `<line x1="${mL}" y1="${y.toFixed(1)}" x2="${W-mR}" y2="${y.toFixed(1)}" stroke="#123049" stroke-width="0.5"/>`;
+    s += `<text x="6" y="${(y+3).toFixed(1)}" fill="#3a6070" font-size="9">${a/1000}k</text>`;
+  }
+  for (let r = 0; r <= RMAX; r += 50) {
+    const x = xOf(r);
+    s += `<line x1="${x.toFixed(1)}" y1="${mT}" x2="${x.toFixed(1)}" y2="${H-mB}" stroke="#0e2740" stroke-width="0.5"/>`;
+    s += `<text x="${x.toFixed(1)}" y="${H-9}" fill="#3a6070" font-size="9" text-anchor="middle">${r}</text>`;
+  }
+  s += `<text x="${(mL+pw/2).toFixed(0)}" y="${H-1}" fill="#2a4a5a" font-size="8" text-anchor="middle">ground range (nm) &rarr;</text>`;
+  // terrain silhouette (true scale — a thin strip; its bumps drive the horizon)
+  let tp = `M ${xOf(0).toFixed(1)} ${yOf(terr[0][1]).toFixed(1)}`;
+  for (const [r, e] of terr) tp += ` L ${xOf(r).toFixed(1)} ${yOf(e).toFixed(1)}`;
+  tp += ` L ${xOf(RMAX).toFixed(1)} ${H-mB} L ${xOf(0).toFixed(1)} ${H-mB} Z`;
+  s += `<path d="${tp}" fill="#17251b" stroke="#3f6a45" stroke-width="0.8"/>`;
+  // predicted horizon line
+  let hp = ''; hor.forEach(([r, a], i) => hp += (i ? ' L' : 'M') + ` ${xOf(r).toFixed(1)} ${yOf(a).toFixed(1)}`);
+  s += `<path d="${hp}" fill="none" stroke="#8fe8ff" stroke-width="1.5"/>`;
+  // actual hits, coloured by altitude
+  for (const [r, a] of hits) {
+    const [cr, cg, cb] = altColor(a);
+    s += `<circle cx="${xOf(r).toFixed(1)}" cy="${yOf(a).toFixed(1)}" r="1.7" fill="rgb(${(cr*255)|0},${(cg*255)|0},${(cb*255)|0})" opacity="0.85"/>`;
+  }
+  s += `</svg>`;
+  host.innerHTML = s;
+  document.getElementById('profileLabel').innerHTML =
+    'Bearing <b>' + Math.round(brg) + '&deg; ' + dirName(brg) + '</b> &middot; '
+    + hits.length + ' hits &middot; <span style="color:#8fe8ff">&mdash;</span> horizon';
+}
+function updateProfileRay() {
+  const r = profileBearing * DEG, len = DEM.RMAX_NM;
+  const pts = [new THREE.Vector3(0, 0, 0), new THREE.Vector3(len * Math.cos(r), 0, len * Math.sin(r))];
+  if (!profileRay) {
+    profileRay = new THREE.Line(new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color: 0x8fe8ff, transparent: true, opacity: 0.8 }));
+    scene.add(profileRay);
+  }
+  profileRay.geometry.setFromPoints(pts);
+}
+function setProfileBearing(brg) {
+  profileBearing = Math.round(((brg % 360) + 360) % 360);
+  document.getElementById('profileBrg').value = profileBearing;
+  renderProfile(); updateProfileRay();
+}
+async function openProfile() {
+  const btn = document.getElementById('profileBtn');
+  if (profileOpen) { closeProfile(); return; }
+  if (terrainBusy) return;
+  terrainBusy = true; btn.disabled = true;
+  try {
+    await ensureTerrain(p => { btn.innerHTML = '&#8944; loading… ' + p + '%'; });
+    profileOpen = true; btn.classList.add('on');
+    document.getElementById('profilePanel').style.display = 'block';
+    setProfileBearing(profileBearing);
+  } catch (e) {
+    document.getElementById('terrainInfo').textContent = 'terrain failed: ' + (e.message || e);
+  } finally { btn.innerHTML = '&#8944; Bearing profile'; terrainBusy = false; btn.disabled = false; }
+}
+function closeProfile() {
+  profileOpen = false;
+  document.getElementById('profileBtn').classList.remove('on');
+  document.getElementById('profilePanel').style.display = 'none';
+  if (profileRay) { scene.remove(profileRay); profileRay.geometry.dispose(); profileRay.material.dispose(); profileRay = null; }
 }
 
 fetch('/cone').then(r => r.json()).then(d => {
