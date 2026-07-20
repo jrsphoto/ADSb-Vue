@@ -41,9 +41,9 @@ your Ultrafeeder on the LAN.)
 
 ## Configuration
 
-Set these as environment variables, or copy `.env.example` to `.env` (server.py
-auto-loads it; Docker can point at it with `env_file: .env`). Real environment
-variables override the file.
+Everything is optional — on the same host as your feeder the defaults just work
+(`ADSB_ULTRAFEEDER=http://127.0.0.1`, port `24556`). All settings are `ADSB_*`
+environment variables:
 
 | Var                | Default              | Meaning                                   |
 |--------------------|----------------------|-------------------------------------------|
@@ -62,6 +62,45 @@ variables override the file.
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.
 Raise `ADSB_MAX_CHUNKS` (e.g. `0`) for the fullest envelope at the cost of a
 bigger payload and slower first load; lower `ADSB_CELL_NM` for finer detail.
+
+### Setting them
+
+**Docker — inline (simplest for a few settings).** Add an `environment:` block to
+the `adsbvue` service in `docker-compose.yml`:
+
+```yaml
+services:
+  adsbvue:
+    build: .
+    image: adsbvue:latest
+    container_name: adsbvue
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - ADSB_ULTRAFEEDER=http://192.168.1.50
+      - ADSB_MAX_CHUNKS=0
+```
+
+**Docker — `.env` file (tidier for many settings).** Copy `.env.example` to
+`.env`, edit it, and point the service at it instead of an `environment:` block:
+
+```yaml
+services:
+  adsbvue:
+    build: .
+    image: adsbvue:latest
+    container_name: adsbvue
+    network_mode: host
+    restart: unless-stopped
+    env_file: .env
+```
+
+Keep `.env` comments on their own line (not after a value). If you use *both*,
+`environment:` entries win over `env_file:`.
+
+**Without Docker.** Export the vars (`ADSB_ULTRAFEEDER=... python3 server.py`) or
+drop a `.env` next to `server.py` — it auto-loads one. A real environment
+variable always overrides the file.
 
 ## Customizing the map
 

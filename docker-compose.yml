@@ -1,10 +1,14 @@
 # Run on the host that runs Ultrafeeder / tar1090.
 #
 # host networking = the container reaches Ultrafeeder's tar1090 at 127.0.0.1:80
-# and publishes the viewer on the host's :24556 with no port juggling. This is
-# the low-impact default. If you'd rather use bridge networking, drop
-# network_mode, add `ports: ["24556:24556"]`, and point ADSB_ULTRAFEEDER at the
-# tar1090 host's address (e.g. http://192.168.1.50).
+# and publishes the viewer on the host's :24556 with no port juggling. If you'd
+# rather use bridge networking, drop network_mode, add `ports: ["24556:24556"]`,
+# and set ADSB_ULTRAFEEDER to the tar1090 host's address (e.g. http://192.168.1.50).
+#
+# No configuration is needed on the feeder host — the app defaults to
+# ADSB_ULTRAFEEDER=http://127.0.0.1 on port 24556. To customize, either add an
+# `environment:` block to this service or use a .env file with `env_file:`.
+# See the README "Configuration" section and .env.example for all ADSB_* options.
 
 services:
   adsbvue:
@@ -12,13 +16,4 @@ services:
     image: adsbvue:latest
     container_name: adsbvue
     network_mode: host
-    # Two ways to configure — pick one (or mix; `environment:` wins over env_file):
-    #   A) inline, as below (works with no extra files), or
-    #   B) copy .env.example -> .env, delete this environment: block, and use:
-    #        env_file: .env
-    # See .env.example for every ADSB_* option.
-    environment:
-      - ADSB_ULTRAFEEDER=http://127.0.0.1
-      - ADSB_PORT=24556
-      # - ADSB_MAX_CHUNKS=0   # widen the coverage envelope (all history)
     restart: unless-stopped
