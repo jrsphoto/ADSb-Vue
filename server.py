@@ -25,6 +25,7 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_MAX_RANGE_NM  drop positions farther than this, nm (default 400)
   ADSB_LOW_ALT_FT    "low altitude" threshold for the cone stat, ft (default 10000)
   ADSB_FETCH_WORKERS parallel chunk downloads (default 8; 1 = serial)
+  ADSB_ANTENNA_AGL_FT antenna height above ground, ft (default 30; terrain LOS model)
 """
 
 import gzip
@@ -79,6 +80,9 @@ ALT_BIN_FT = float(os.environ.get("ADSB_ALT_BIN_FT", "1000"))    # de-dup alt bi
 MAX_RANGE_NM = float(os.environ.get("ADSB_MAX_RANGE_NM", "400")) # drop positions beyond this (bad/MLAT)
 LOW_ALT_FT = float(os.environ.get("ADSB_LOW_ALT_FT", "10000"))   # "low" threshold for the low-alt cone stat
 FETCH_WORKERS = int(os.environ.get("ADSB_FETCH_WORKERS", "8"))   # parallel chunk downloads
+ANTENNA_AGL_FT = float(os.environ.get("ADSB_ANTENNA_AGL_FT", "30"))  # antenna height above ground
+                                                                 # (mast); feeds the terrain
+                                                                 # line-of-sight horizon model
 
 # --- fixed constants (named, not config — changing these would be wrong/noise) ---
 NM_PER_DEG = 60.0            # nautical miles per degree of latitude
@@ -232,6 +236,7 @@ def build_points():
         "ultrafeeder": ULTRAFEEDER,
         "recv_lat": rlat,
         "recv_lon": rlon,
+        "antenna_agl_ft": ANTENNA_AGL_FT,   # mast height for the terrain LOS model
         "count": len(points),
         "chunks": n_chunks,
         "t_min": t_min,          # earliest / latest first-seen time in the window

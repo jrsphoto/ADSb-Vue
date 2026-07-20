@@ -135,6 +135,12 @@ input[type=range]::-moz-range-thumb {
     </div>
   </div>
 
+  <div class="sec">Terrain</div>
+  <div class="btns">
+    <button class="view" id="terrainBtn" title="Line-of-sight horizon predicted from terrain + earth curvature">&#9650; Predicted horizon</button>
+    <div id="terrainInfo" style="font-size:10px; color:#1a3a50; line-height:1.5"></div>
+  </div>
+
   <div class="sec" id="tlSec" style="display:none">Timeline &mdash; coverage over the window</div>
   <div class="btns" id="tlCtl" style="display:none">
     <div style="display:flex; align-items:center; gap:8px">
@@ -610,6 +616,22 @@ function initScene(data) {
     },
     play(opts) { startPlayback(opts || {}); },
     stop() { stopPlayback(playCut); this.freeze(); return this.stats(); },
+    // terrain-horizon test helpers (headless verification)
+    async terrain() { await toggleTerrain(); return this.terrainInfo(); },
+    terrainInfo() {
+      if (!DEM.grid) return { ready: DEM.ready, tiles: DEM.tiles.size };
+      const f = DEM.grid.floor[0], s = DEM.grid.RSTEP;   // bearing 0 (north)
+      const at = nm => Math.round(f[Math.round(nm / s)]);
+      return { antFt: Math.round(DEM.antFt), tiles: DEM.tiles.size, zoom: DEM.ZOOM,
+        brgN_floorFt: { r0: at(0), r20: at(20), r50: at(50), r100: at(100), r150: at(150), r200: at(200) } };
+    },
+    elevFt(lat, lon) { const m = elevM(lat, lon); return m === m ? Math.round(m * FT_PER_M) : null; },
+    floorAt(brgDeg) {
+      if (!DEM.grid) return null;
+      const ai = Math.round(((brgDeg % 360) + 360) % 360 / DEM.grid.AZ) % DEM.grid.N_AZ;
+      const f = DEM.grid.floor[ai], s = DEM.grid.RSTEP;
+      return [20, 50, 100, 150, 200].reduce((o, nm) => (o['r' + nm] = Math.round(f[Math.round(nm / s)]), o), {});
+    },
     // Drive the active reveal to a fraction of the window without relying on rAF
     // (rAF is paused in a background tab) — for headless correctness checks.
     revealSet(frac) {
@@ -933,6 +955,7 @@ function wireUI() {
       btn.classList.toggle('on', bands[b]); rebuild();
     });
   });
+  document.getElementById('terrainBtn').addEventListener('click', toggleTerrain);
   document.getElementById('vNorth').addEventListener('click', () => {
     camera.up.set(1,0,0); camera.position.set(0,360,0); controls.target.set(0,0,0); controls.update();
   });
@@ -1085,6 +1108,182 @@ async function loadStateMap(data) {
     lbl.position.set(p.x, 7, p.z);
     scene.add(lbl);
   }
+}
+
+// ===== terrain line-of-sight horizon (predicted coverage floor) =============
+// Fetch open Terrarium elevation tiles, sample the ground along each bearing,
+// and compute the lowest altitude an aircraft could fly and still be in line of
+// sight over the intervening terrain AND the earth's curvature (4/3-earth radio
+// model). That's the horizon your antenna is physically limited by — the thing
+// to compare your *measured* coverage against. All optional; if the tiles can't
+// be reached the rest of the app is unaffected.
+const DEM = {
+  ZOOM: 8,                // terrain tile zoom (≈430 m/px here; ~60 tiles for 250 nm)
+  RMAX_NM: 250,           // model the horizon out to here
+  tiles: new Map(),       // "z/x/y" -> Float32Array(256*256) metres, or null if it failed
+  ready: false,           // region prefetched
+  antFt: 0,               // antenna height above sea level (ft)
+  grid: null,             // last computed predicted-floor grid
+};
+const FT_PER_M = 3.280839895;
+const R_EARTH_NM = (4 / 3) * 6371000 / 1852;              // 4/3 effective earth radius, nm
+const curveDropFt = xNm => (xNm * xNm) / (2 * R_EARTH_NM) * FT_PER_NM;  // earth bulge at range x
+
+const lonToPx = (lon, world) => (lon + 180) / 360 * world;
+const latToPx = (lat, world) => {
+  const s = Math.sin(lat * DEG);
+  return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * world;
+};
+
+function fetchTile(z, x, y) {
+  const key = z + '/' + x + '/' + y;
+  if (DEM.tiles.has(key)) return Promise.resolve();
+  const url = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+  return new Promise(res => {
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas'); c.width = c.height = 256;
+        const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
+        const d = ctx.getImageData(0, 0, 256, 256).data;
+        const el = new Float32Array(256 * 256);
+        for (let i = 0, p = 0; i < el.length; i++, p += 4)
+          el[i] = (d[p] * 256 + d[p + 1] + d[p + 2] / 256) - 32768;   // terrarium decode (m)
+        DEM.tiles.set(key, el);
+      } catch (e) { DEM.tiles.set(key, null); }    // CORS/other -> mark missing
+      res();
+    };
+    img.onerror = () => { DEM.tiles.set(key, null); res(); };
+    img.src = url;
+  });
+}
+// ground elevation (metres) at a lat/lon from the cached tiles; NaN if unavailable
+function elevM(lat, lon) {
+  const world = 256 * (1 << DEM.ZOOM);
+  const xpx = lonToPx(lon, world), ypx = latToPx(lat, world);
+  const tx = Math.floor(xpx / 256), ty = Math.floor(ypx / 256);
+  const el = DEM.tiles.get(DEM.ZOOM + '/' + tx + '/' + ty);
+  if (!el) return NaN;
+  const px = Math.min(255, Math.max(0, Math.floor(xpx - tx * 256)));
+  const py = Math.min(255, Math.max(0, Math.floor(ypx - ty * 256)));
+  return el[py * 256 + px];
+}
+// lat/lon a given bearing (deg) + ground range (nm) from the receiver (equirect.)
+function destLL(rlat, rlon, brgDeg, distNm) {
+  const r = brgDeg * DEG;
+  return [rlat + distNm * Math.cos(r) / 60,
+          rlon + distNm * Math.sin(r) / (60 * Math.cos(rlat * DEG))];
+}
+
+async function prefetchDEM(rlat, rlon, onProg) {
+  const world = 256 * (1 << DEM.ZOOM);
+  const dLat = DEM.RMAX_NM / 60, dLon = DEM.RMAX_NM / (60 * Math.cos(rlat * DEG));
+  const x0 = Math.floor(lonToPx(rlon - dLon, world) / 256), x1 = Math.floor(lonToPx(rlon + dLon, world) / 256);
+  const y0 = Math.floor(latToPx(rlat + dLat, world) / 256), y1 = Math.floor(latToPx(rlat - dLat, world) / 256);
+  const jobs = [];
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) jobs.push([x, y]);
+  let done = 0, i = 0;
+  const worker = async () => {
+    while (i < jobs.length) { const [x, y] = jobs[i++]; await fetchTile(DEM.ZOOM, x, y); if (onProg) onProg(++done, jobs.length); }
+  };
+  await Promise.all(Array.from({ length: 8 }, worker));   // 8-way concurrency
+}
+
+// Predicted minimum visible altitude (ft AMSL) on a bearing/range grid: for each
+// bearing, walk outward tracking the steepest grazing angle over terrain+bulge;
+// the floor at range r is that ray projected out to r (plus the bulge back).
+function computePredictedFloor(rlat, rlon) {
+  const N_AZ = 120, AZ = 360 / N_AZ, RSTEP = 4, N_R = Math.floor(DEM.RMAX_NM / RSTEP) + 1;
+  const floor = Array.from({ length: N_AZ }, () => new Float32Array(N_R));
+  const antFt = DEM.antFt;
+  for (let ai = 0; ai < N_AZ; ai++) {
+    const brg = ai * AZ;
+    let maxAng = -Infinity, ri = 0;
+    for (let x = 1; x <= DEM.RMAX_NM; x++) {
+      const [la, lo] = destLL(rlat, rlon, brg, x);
+      const em = elevM(la, lo);
+      if (em === em) {                                  // not NaN
+        const yFt = (em * FT_PER_M - antFt) - curveDropFt(x);   // tangent-frame height, ft
+        const ang = yFt / (x * FT_PER_NM);
+        if (ang > maxAng) maxAng = ang;
+      }
+      while (ri < N_R && x >= ri * RSTEP) {
+        const rr = ri * RSTEP;
+        let f = rr > 0 ? antFt + maxAng * (rr * FT_PER_NM) + curveDropFt(rr) : antFt;
+        const gm = elevM(...destLL(rlat, rlon, brg, Math.max(0.1, rr)));   // can't be below ground
+        if (gm === gm) f = Math.max(f, gm * FT_PER_M);
+        floor[ai][ri++] = f;
+      }
+    }
+    while (ri < N_R) { floor[ai][ri] = floor[ai][ri - 1]; ri++; }
+  }
+  return { N_AZ, AZ, RSTEP, N_R, floor };
+}
+
+// Build the predicted-horizon surface (cyan-cast so it reads distinct from the
+// measured cone). Closed ring; smooth by construction, no post-filtering needed.
+function buildHorizon(grid) {
+  const { N_AZ, AZ, RSTEP, N_R, floor } = grid;
+  const cols = N_AZ + 1;
+  const pos = new Float32Array(cols * N_R * 3), col = new Float32Array(cols * N_R * 3);
+  for (let ci = 0; ci < cols; ci++) {
+    const ai = ci % N_AZ, az = ci * AZ * DEG;
+    for (let ri = 0; ri < N_R; ri++) {
+      const idx = (ci * N_R + ri) * 3, r = ri * RSTEP, altFt = floor[ai][ri];
+      pos[idx] = r * Math.cos(az); pos[idx + 1] = altFt * ALT_SCALE; pos[idx + 2] = r * Math.sin(az);
+      const [cr, cg, cb] = altColor(altFt);
+      col[idx] = cr * 0.45; col[idx + 1] = cg * 0.7 + 0.25; col[idx + 2] = cb * 0.6 + 0.4;
+    }
+  }
+  const index = [];
+  for (let ci = 0; ci < cols - 1; ci++) for (let ri = 0; ri < N_R - 1; ri++) {
+    const a = ci * N_R + ri, b = (ci + 1) * N_R + ri, c = ci * N_R + ri + 1, d = (ci + 1) * N_R + ri + 1;
+    index.push(a, b, c, b, d, c);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.setIndex(index); geo.computeVertexNormals();
+  const g = new THREE.Group();
+  const fill = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+    vertexColors: true, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }));
+  fill.userData.role = 'fill'; g.add(fill);
+  const wire = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0x8fe8ff, wireframe: true, transparent: true, opacity: 0.22, side: THREE.DoubleSide }));
+  wire.userData.role = 'wire'; g.add(wire);
+  return g;
+}
+
+let horizonGroup = null, terrainBusy = false;
+async function toggleTerrain() {
+  const btn = document.getElementById('terrainBtn');
+  const info = document.getElementById('terrainInfo');
+  if (horizonGroup) {                 // hide
+    scene.remove(horizonGroup); disposeGroup(horizonGroup); horizonGroup = null;
+    btn.classList.remove('on'); btn.innerHTML = '&#9650; Predicted horizon';
+    return;
+  }
+  if (terrainBusy) return;
+  terrainBusy = true; btn.disabled = true;
+  try {
+    if (!DEM.ready) {
+      btn.innerHTML = '&#9650; loading terrain… 0%';
+      await prefetchDEM(DATA.recv_lat, DATA.recv_lon,
+        (d, t) => { btn.innerHTML = '&#9650; loading terrain… ' + Math.round(d / t * 100) + '%'; });
+      DEM.ready = true;
+    }
+    const groundM = elevM(DATA.recv_lat, DATA.recv_lon);
+    DEM.antFt = (groundM === groundM ? groundM * FT_PER_M : 0) + (DATA.antenna_agl_ft || 30);
+    DEM.grid = computePredictedFloor(DATA.recv_lat, DATA.recv_lon);
+    horizonGroup = buildHorizon(DEM.grid);
+    scene.add(horizonGroup);
+    btn.classList.add('on'); btn.innerHTML = '&#9650; Predicted horizon';
+    if (info) info.textContent = 'antenna ' + Math.round(DEM.antFt) + ' ft MSL · '
+      + DEM.tiles.size + ' tiles';
+  } catch (e) {
+    btn.innerHTML = '&#9650; terrain failed';
+    if (info) info.textContent = String(e.message || e);
+  } finally { terrainBusy = false; btn.disabled = false; }
 }
 
 fetch('/cone').then(r => r.json()).then(d => {
