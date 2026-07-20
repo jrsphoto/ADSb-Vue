@@ -751,6 +751,16 @@ function initScene(data) {
     },
     play(opts) { startPlayback(opts || {}); },
     stop() { stopPlayback(playCut); this.freeze(); return this.stats(); },
+    // render one composited export frame (3D + timestamp overlay) at a fraction
+    exportFrame(frac) {
+      this.seek(frac);
+      const src = renderer.domElement, comp = document.createElement('canvas');
+      comp.width = src.width; comp.height = src.height;
+      const c = comp.getContext('2d');
+      c.drawImage(src, 0, 0, comp.width, comp.height);
+      drawExportOverlay(c, comp.width, comp.height);
+      return comp.toDataURL('image/png');
+    },
     // terrain-horizon test helpers (headless verification)
     async terrain() { await toggleTerrain(); return this.terrainInfo(); },
     terrainInfo() {
@@ -965,13 +975,53 @@ function pickMime() {
     if (MediaRecorder.isTypeSupported(m)) return m;
   return '';
 }
+// Burned-in overlay for the exported clip: the date/time the current frame
+// represents (playCut), plus a progress bar across the window. Only drawn onto
+// the recording's compositor canvas — never the live view.
+function drawExportOverlay(ctx, w, h) {
+  const dt = new Date(playCut * 1000);
+  const stamp = dt.toLocaleDateString([], { year: 'numeric', month: 'short', day: '2-digit' })
+              + '  ' + dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const frac = tMax > tMin ? Math.min(1, Math.max(0, (playCut - tMin) / (tMax - tMin))) : 1;
+  const pad = Math.round(h * 0.022);
+  const fs = Math.max(13, Math.round(h * 0.030));
+  const barH = Math.max(2, Math.round(h * 0.004));
+  ctx.save();
+  const g = ctx.createLinearGradient(0, h - fs * 3.4, 0, h);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(3,6,11,0.74)');
+  ctx.fillStyle = g; ctx.fillRect(0, h - fs * 3.4, w, fs * 3.4);
+  ctx.fillStyle = 'rgba(30,60,80,0.55)'; ctx.fillRect(0, h - barH, w, barH);
+  ctx.fillStyle = '#4a90c8'; ctx.fillRect(0, h - barH, w * frac, barH);
+  const y = h - pad - barH;
+  ctx.font = `600 ${fs}px "SF Mono", Consolas, monospace`;
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillText(stamp, pad + 1, y + 1);
+  ctx.fillStyle = '#cfe6f6'; ctx.fillText(stamp, pad, y);
+  const brand = 'ADSb-Vue';
+  ctx.font = `500 ${Math.round(fs * 0.8)}px "SF Mono", Consolas, monospace`;
+  ctx.fillStyle = '#3f6f8c'; ctx.fillText(brand, w - ctx.measureText(brand).width - pad, y);
+  ctx.restore();
+}
 async function exportClip() {
   const btn = document.getElementById('tlExport');
   if (recording || preparing) return;
   if (!exportSupported()) { btn.textContent = '✕ unsupported'; return; }
   recording = true; endPlaybackForEdit();
   btn.disabled = true; document.getElementById('tlPlay').disabled = true;
-  const stream = renderer.domElement.captureStream(30);
+  // Composite the WebGL canvas + timestamp overlay into a 2D canvas and record
+  // that, so the stamp is burned into the file.
+  const src = renderer.domElement;
+  const comp = document.createElement('canvas');
+  comp.width = src.width; comp.height = src.height;
+  const cctx = comp.getContext('2d');
+  let compositing = true;
+  (function composite() {
+    if (!compositing) return;
+    cctx.drawImage(src, 0, 0, comp.width, comp.height);
+    drawExportOverlay(cctx, comp.width, comp.height);
+    requestAnimationFrame(composite);
+  })();
+  const stream = comp.captureStream(30);
   const mime = pickMime();
   const rec = new MediaRecorder(stream, mime
     ? { mimeType: mime, videoBitsPerSecond: 8_000_000 }
@@ -998,6 +1048,7 @@ async function exportClip() {
     if (reveal || playing) stopPlayback(playCut, true);
     if (rec.state !== 'inactive') rec.stop();
     await stopped;
+    compositing = false;
     controls.autoRotate = prevAuto; controls.autoRotateSpeed = prevSpeed;
   }
   const blob = new Blob(chunks, { type: 'video/webm' });
