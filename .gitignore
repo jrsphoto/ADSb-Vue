@@ -3,3 +3,6 @@ __pycache__/
 *.pyo
 # local config — commit .env.example, not your real .env
 .env
+
+# per-deployment city labels — commit cities.local.json.example, not your real one
+cities.local.json

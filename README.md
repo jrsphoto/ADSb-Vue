@@ -116,15 +116,25 @@ variable always overrides the file. Restart the process to pick up changes.
 ## Customizing the map
 
 State borders and lakes are drawn automatically and the home state(s) are
-highlighted based on your receiver's position — no editing needed. The labelled
-**cities** are a short example list near the top of `index.html` (`const CITIES`,
-`[label, lat, lon]`); the default set is upper-Midwest US, so swap in cities near
-your own receiver.
+highlighted based on your receiver's position — no editing needed.
+
+The labelled **cities** default to a short upper-Midwest US example. To use your
+own, copy the example to a git-ignored local file and edit that — it overrides the
+built-in list and **survives every update**, so you never touch a tracked file:
+
+    cp cities.local.json.example cities.local.json
+    # edit cities.local.json — a JSON array of [ "label", lat, lon ] entries
+
+The server serves it at `/cities`; only entries within range of the receiver are
+drawn. If the file is absent, the built-in defaults are used. (In Docker, put
+`cities.local.json` next to `server.py` in the repo before building, or bind-mount
+it in — it just needs to sit beside `server.py` in the container.)
 
 ## Endpoints
 
 - `GET /`        — the 3D viewer page
 - `GET /cone`    — observations as JSON (`?refresh=true` bypasses the cache)
+- `GET /cities`  — optional local city labels (your `cities.local.json`, else `[]`)
 - `GET /health`  — liveness
 
 ## Run via Docker (recommended)

@@ -958,11 +958,13 @@ function wireUI() {
 // Geographic context: state borders (home states auto-highlighted), lakes, and a
 // few labelled cities for orientation. All vector, all optional.
 //
-// EDIT THIS for your area: it's just [label, lat, lon] entries, and only those
-// within range of the receiver are drawn. The sample set below is around the
-// upper Midwest US; replace it with cities near your own receiver. (State
-// borders and lakes are global-ish and need no editing.)
-const CITIES = [
+// The sample set below is around the upper Midwest US. To use your own cities,
+// prefer a git-ignored `cities.local.json` next to server.py (served at /cities)
+// — it overrides this list and survives every update, so you never edit this
+// tracked file. See cities.local.json.example. (State borders and lakes are
+// global-ish and need no editing.) Format: [label, lat, lon]; only entries
+// within range of the receiver are drawn.
+const DEFAULT_CITIES = [
   ['MSP', 44.98, -93.27], ['Duluth', 46.79, -92.10], ['Rochester', 44.02, -92.48],
   ['Eau Claire', 44.81, -91.50], ['La Crosse', 43.81, -91.25], ['St Cloud', 45.56, -94.16],
   ['Madison', 43.07, -89.40], ['Green Bay', 44.51, -88.02], ['Wausau', 44.96, -89.63],
@@ -1062,9 +1064,16 @@ async function loadStateMap(data) {
   } catch (e) { console.warn('lakes:', e); }
 
   // --- regional cities (dots + labels) ---
+  // A git-ignored cities.local.json on the server (served at /cities) overrides
+  // the built-in list; absent, /cities returns [] and we keep the defaults.
+  let cities = DEFAULT_CITIES;
+  try {
+    const r = await fetch('/cities');
+    if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) cities = j; }
+  } catch (e) { /* offline / no override — keep the defaults */ }
   const dotGeo = new THREE.SphereGeometry(1.4, 8, 8);
   const dotMat = new THREE.MeshBasicMaterial({ color: 0xbfe4ff });
-  for (const [name, lat, lon] of CITIES) {
+  for (const [name, lat, lon] of cities) {
     const p = geoToXZ(lon, lat);
     if (Math.hypot(p.x, p.z) > 270) continue;   // beyond range rings
     const dot = new THREE.Mesh(dotGeo, dotMat); dot.position.copy(p); dot.position.y = 0.5;

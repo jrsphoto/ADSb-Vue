@@ -322,6 +322,23 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, snap["gz"], "application/json", encoding="gzip")
                 else:
                     self._send(200, snap["json"], "application/json", gz_ok=False)
+            elif path == "/cities":
+                # Optional per-deployment city labels. A git-ignored
+                # cities.local.json next to server.py overrides the page's
+                # built-in list, so a site's own cities survive every update.
+                # Absent (the common case) -> an empty array, never a 404, so a
+                # fresh install stays quiet in the console.
+                fp = os.path.join(HERE, "cities.local.json")
+                body = b"[]"
+                if os.path.exists(fp):
+                    try:
+                        with open(fp, "rb") as fh:
+                            data = fh.read()
+                        json.loads(data)          # validate; fall back to [] if broken
+                        body = data
+                    except Exception as e:
+                        sys.stderr.write("cities.local.json ignored (%s)\n" % e)
+                self._send(200, body, "application/json", gz_ok=False)
             elif path == "/health":
                 self._send(200, json.dumps({"ok": True}), "application/json")
             else:
