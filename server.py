@@ -12,13 +12,18 @@ shell.
 
 Zero third-party dependencies — Python 3 standard library only.
 
-Config via environment variables:
+Config via environment variables (or a .env file next to server.py — see
+.env.example):
   ADSB_ULTRAFEEDER   base URL of the tar1090 instance   (default http://127.0.0.1)
   ADSB_RECV_LAT      receiver latitude   (default: auto from /data/receiver.json)
   ADSB_RECV_LON      receiver longitude  (default: auto from /data/receiver.json)
   ADSB_PORT          port to listen on   (default 24556)
   ADSB_CACHE_SECS    seconds to cache parsed points (default 120)
-  ADSB_MAX_CHUNKS    cap number of chunks read, newest-first (default 0 = all)
+  ADSB_MAX_CHUNKS    cap number of chunks read, newest-first (default 48, 0 = all)
+  ADSB_CELL_NM       de-dup grid cell size, nm   (default 1.5)
+  ADSB_ALT_BIN_FT    de-dup altitude bin, ft     (default 1000)
+  ADSB_MAX_RANGE_NM  drop positions farther than this, nm (default 400)
+  ADSB_LOW_ALT_FT    "low altitude" threshold for the cone stat, ft (default 10000)
 """
 
 import gzip
@@ -33,16 +38,40 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+
+def _load_dotenv(path):
+    """Zero-dependency .env loader: KEY=VALUE lines. A real environment variable
+    always wins over the file (setdefault), matching how docker-compose behaves."""
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    except FileNotFoundError:
+        pass
+
+
+_load_dotenv(os.path.join(HERE, ".env"))
+
+# --- tunable config (env vars, optionally via a .env file — see .env.example) ---
 ULTRAFEEDER = os.environ.get("ADSB_ULTRAFEEDER", "http://127.0.0.1").rstrip("/")
 PORT = int(os.environ.get("ADSB_PORT", "24556"))
 CACHE_SECS = int(os.environ.get("ADSB_CACHE_SECS", "120"))
-MAX_CHUNKS = int(os.environ.get("ADSB_MAX_CHUNKS", "48"))      # newest-first, 0=all
-CELL_NM = float(os.environ.get("ADSB_CELL_NM", "1.5"))        # de-dup cell size
-ALT_BIN_FT = float(os.environ.get("ADSB_ALT_BIN_FT", "1000"))  # de-dup alt bin
+MAX_CHUNKS = int(os.environ.get("ADSB_MAX_CHUNKS", "48"))         # newest-first, 0=all
+CELL_NM = float(os.environ.get("ADSB_CELL_NM", "1.5"))           # de-dup cell size (nm)
+ALT_BIN_FT = float(os.environ.get("ADSB_ALT_BIN_FT", "1000"))    # de-dup alt bin (ft)
+MAX_RANGE_NM = float(os.environ.get("ADSB_MAX_RANGE_NM", "400")) # drop positions beyond this (bad/MLAT)
+LOW_ALT_FT = float(os.environ.get("ADSB_LOW_ALT_FT", "10000"))   # "low" threshold for the low-alt cone stat
 
-NM_PER_DEG = 60.0           # nautical miles per degree of latitude
+# --- fixed constants (named, not config — changing these would be wrong/noise) ---
+NM_PER_DEG = 60.0            # nautical miles per degree of latitude
 FT_PER_NM = 6076.12         # feet per nautical mile
 STEP = CELL_NM / NM_PER_DEG  # de-dup grid step in degrees
+BEARING_BINS = 361          # one slot per integer bearing, 0..360 inclusive
+GZIP_MIN_BYTES = 1400       # ~one MTU; not worth the CPU to compress smaller replies
 
 _recv = {"lat": None, "lon": None}
 # data = parsed dict; json/gz = payload serialized once per rebuild (see _ensure)
@@ -115,8 +144,8 @@ def build_points():
         names = names[-MAX_CHUNKS:]
 
     points = []          # [bearing, dist_nm, alt_ft]
-    cone_all = [0.0] * 361   # max ground distance per integer bearing
-    cone_low = [0.0] * 361   # same, restricted to < 10000 ft
+    cone_all = [0.0] * BEARING_BINS   # max ground distance per integer bearing
+    cone_low = [0.0] * BEARING_BINS   # same, restricted to below LOW_ALT_FT
     seen = set()             # (hex, rounded-lat, rounded-lon) de-dup within a run
     n_chunks = 0
 
@@ -145,13 +174,13 @@ def build_points():
                     continue
                 seen.add(key)
                 brg, dist = bearing_distance(sin1, cos1, rlat_r, rlon_r, lat, lon)
-                if dist > 400:      # discard obvious bad positions
+                if dist > MAX_RANGE_NM:   # discard obvious bad positions
                     continue
                 points.append([round(brg, 1), round(dist, 2), int(alt)])
-                bi = int(round(brg)) % 361
+                bi = int(round(brg)) % BEARING_BINS
                 if dist > cone_all[bi]:
                     cone_all[bi] = dist
-                if alt < 10000 and dist > cone_low[bi]:
+                if alt < LOW_ALT_FT and dist > cone_low[bi]:
                     cone_low[bi] = dist
 
     return {
@@ -214,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         if encoding:
             self.send_header("Content-Encoding", encoding)
-        elif gz_ok and "gzip" in self.headers.get("Accept-Encoding", "") and len(body) > 1400:
+        elif gz_ok and "gzip" in self.headers.get("Accept-Encoding", "") and len(body) > GZIP_MIN_BYTES:
             body = gzip.compress(body, 6)
             self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(body)))

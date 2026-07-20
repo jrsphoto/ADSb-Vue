@@ -36,7 +36,11 @@ Zero third-party dependencies — Python 3 standard library only. Then open
 public CDNs, so the *viewer's browser* needs internet; the server only talks to
 your Ultrafeeder on the LAN.)
 
-## Configuration (environment variables)
+## Configuration
+
+Set these as environment variables, or copy `.env.example` to `.env` (server.py
+auto-loads it; Docker can point at it with `env_file: .env`). Real environment
+variables override the file.
 
 | Var                | Default              | Meaning                                   |
 |--------------------|----------------------|-------------------------------------------|
@@ -47,6 +51,8 @@ your Ultrafeeder on the LAN.)
 | `ADSB_MAX_CHUNKS`  | `48`                 | Newest-first chunk cap (0 = all history)  |
 | `ADSB_CELL_NM`     | `1.5`                | De-dup grid cell size (nm)                |
 | `ADSB_ALT_BIN_FT`  | `1000`               | De-dup altitude bin (ft)                  |
+| `ADSB_MAX_RANGE_NM`| `400`                | Discard positions farther than this (nm)  |
+| `ADSB_LOW_ALT_FT`  | `10000`              | "Low altitude" cutoff for the low-alt range stat (ft) |
 | `ADSB_CACHE_SECS`  | `120`                | Seconds to cache parsed observations      |
 
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.

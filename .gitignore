@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 *.pyo
+# local config — commit .env.example, not your real .env
+.env
