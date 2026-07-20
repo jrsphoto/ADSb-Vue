@@ -141,8 +141,36 @@ def _alt_ft(v):
     return 0.0  # "ground" / null
 
 
+def iter_chunks(names):
+    """Yield parsed history-chunk docs, downloaded/decompressed/parsed in parallel
+    (network latency dominates a serial loop, especially for a remote feeder).
+    Results stream in as they complete; failed chunks are logged and skipped."""
+    with ThreadPoolExecutor(max_workers=max(1, FETCH_WORKERS)) as ex:
+        futures = {ex.submit(_load_chunk, name): name for name in names}
+        for fut in as_completed(futures):
+            try:
+                yield fut.result()
+            except Exception as e:
+                sys.stderr.write("chunk %s failed: %s\n" % (futures[fut], e))
+
+
+def build_cones(points):
+    """Per-bearing coverage reach: max ground distance at each integer bearing,
+    over all altitudes (cone_all) and restricted to below LOW_ALT_FT (cone_low)."""
+    cone_all = [0.0] * BEARING_BINS
+    cone_low = [0.0] * BEARING_BINS
+    for brg, dist, alt in points:
+        bi = int(round(brg)) % BEARING_BINS
+        if dist > cone_all[bi]:
+            cone_all[bi] = dist
+        if alt < LOW_ALT_FT and dist > cone_low[bi]:
+            cone_low[bi] = dist
+    return [round(v, 1) for v in cone_all], [round(v, 1) for v in cone_low]
+
+
 def build_points():
-    """Read all recent-history chunks and return the cone payload."""
+    """Read recent-history chunks and return the cone payload: de-duplicated
+    observations as [bearing, distance_nm, altitude_ft], plus per-bearing reach."""
     rlat, rlon = receiver()
     # Receiver terms are constant for the whole run — compute once, not per row.
     rlat_r, rlon_r = math.radians(rlat), math.radians(rlon)
@@ -152,27 +180,22 @@ def build_points():
     if MAX_CHUNKS > 0:
         names = names[-MAX_CHUNKS:]
 
-    points = []          # [bearing, dist_nm, alt_ft]
-    cone_all = [0.0] * BEARING_BINS   # max ground distance per integer bearing
-    cone_low = [0.0] * BEARING_BINS   # same, restricted to below LOW_ALT_FT
-    seen = set()             # (hex, rounded-lat, rounded-lon) de-dup within a run
+    points = []
+    seen = set()      # coarse (lat, lon, alt-bin) cells already taken this run
     n_chunks = 0
-
-    # Fold one parsed chunk into the shared de-dup/cone state. Only the main
-    # thread calls this (as results arrive), so no locking is needed.
-    def consume(doc):
+    # Single pass over every observation: de-duplicate onto a coarse grid (this is
+    # a coverage map, not a traffic replay) and convert each kept hit to
+    # receiver-relative polar coordinates.
+    for doc in iter_chunks(names):
+        n_chunks += 1
         for f in doc.get("files", []):
             for ac in f.get("aircraft", []):
-                # compact tar1090 array: [hex, alt, gs, track, lat, lon, ...]
-                if len(ac) < 6:
+                if len(ac) < 6:      # compact tar1090 row: [hex,alt,gs,trk,lat,lon,...]
                     continue
                 lat, lon = ac[4], ac[5]
                 if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
                     continue
                 alt = _alt_ft(ac[1])
-                # spatial/alt de-dup onto a coarse grid: this is a coverage map,
-                # not a traffic replay. CELL_NM-degree cells keep the payload and
-                # render light regardless of how much history we read.
                 key = (round(lat / STEP), round(lon / STEP), int(alt // ALT_BIN_FT))
                 if key in seen:
                     continue
@@ -181,26 +204,8 @@ def build_points():
                 if dist > MAX_RANGE_NM:   # discard obvious bad positions
                     continue
                 points.append([round(brg, 1), round(dist, 2), int(alt)])
-                bi = int(round(brg)) % BEARING_BINS
-                if dist > cone_all[bi]:
-                    cone_all[bi] = dist
-                if alt < LOW_ALT_FT and dist > cone_low[bi]:
-                    cone_low[bi] = dist
 
-    # Download + decompress + parse chunks in parallel — network latency
-    # dominates a serial loop, especially for a remote feeder. Results are folded
-    # in as they complete, keeping only a few decompressed chunks live at once.
-    with ThreadPoolExecutor(max_workers=max(1, FETCH_WORKERS)) as ex:
-        futures = {ex.submit(_load_chunk, name): name for name in names}
-        for fut in as_completed(futures):
-            try:
-                doc = fut.result()
-            except Exception as e:
-                sys.stderr.write("chunk %s failed: %s\n" % (futures[fut], e))
-                continue
-            n_chunks += 1
-            consume(doc)
-
+    cone_all, cone_low = build_cones(points)
     return {
         "ok": True,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -210,8 +215,8 @@ def build_points():
         "count": len(points),
         "chunks": n_chunks,
         "points": points,
-        "cone_all": [round(v, 1) for v in cone_all],
-        "cone_low": [round(v, 1) for v in cone_low],
+        "cone_all": cone_all,
+        "cone_low": cone_low,
     }
 
 
