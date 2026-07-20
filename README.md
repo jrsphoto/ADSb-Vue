@@ -53,6 +53,7 @@ variables override the file.
 | `ADSB_ALT_BIN_FT`  | `1000`               | De-dup altitude bin (ft)                  |
 | `ADSB_MAX_RANGE_NM`| `400`                | Discard positions farther than this (nm)  |
 | `ADSB_LOW_ALT_FT`  | `10000`              | "Low altitude" cutoff for the low-alt range stat (ft) |
+| `ADSB_FETCH_WORKERS`| `8`                 | Parallel chunk downloads (1 = serial; higher helps a remote feeder) |
 | `ADSB_CACHE_SECS`  | `120`                | Seconds to cache parsed observations      |
 
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.

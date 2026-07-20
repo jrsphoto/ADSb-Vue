@@ -24,6 +24,7 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_ALT_BIN_FT    de-dup altitude bin, ft     (default 1000)
   ADSB_MAX_RANGE_NM  drop positions farther than this, nm (default 400)
   ADSB_LOW_ALT_FT    "low altitude" threshold for the cone stat, ft (default 10000)
+  ADSB_FETCH_WORKERS parallel chunk downloads (default 8; 1 = serial)
 """
 
 import gzip
@@ -34,6 +35,7 @@ import sys
 import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -65,6 +67,7 @@ CELL_NM = float(os.environ.get("ADSB_CELL_NM", "1.5"))           # de-dup cell s
 ALT_BIN_FT = float(os.environ.get("ADSB_ALT_BIN_FT", "1000"))    # de-dup alt bin (ft)
 MAX_RANGE_NM = float(os.environ.get("ADSB_MAX_RANGE_NM", "400")) # drop positions beyond this (bad/MLAT)
 LOW_ALT_FT = float(os.environ.get("ADSB_LOW_ALT_FT", "10000"))   # "low" threshold for the low-alt cone stat
+FETCH_WORKERS = int(os.environ.get("ADSB_FETCH_WORKERS", "8"))   # parallel chunk downloads
 
 # --- fixed constants (named, not config — changing these would be wrong/noise) ---
 NM_PER_DEG = 60.0            # nautical miles per degree of latitude
@@ -88,6 +91,12 @@ def _fetch(url, timeout=20):
 
 def _fetch_json(url, timeout=20):
     return json.loads(_fetch(url, timeout))
+
+
+def _load_chunk(name):
+    """Fetch + decompress + parse one history chunk (runs in a worker thread)."""
+    raw = _fetch(ULTRAFEEDER + "/chunks/" + name)
+    return json.loads(gzip.decompress(raw))
 
 
 def receiver():
@@ -149,14 +158,9 @@ def build_points():
     seen = set()             # (hex, rounded-lat, rounded-lon) de-dup within a run
     n_chunks = 0
 
-    for name in names:
-        try:
-            raw = _fetch(ULTRAFEEDER + "/chunks/" + name)
-            doc = json.loads(gzip.decompress(raw))
-        except Exception as e:
-            sys.stderr.write("chunk %s failed: %s\n" % (name, e))
-            continue
-        n_chunks += 1
+    # Fold one parsed chunk into the shared de-dup/cone state. Only the main
+    # thread calls this (as results arrive), so no locking is needed.
+    def consume(doc):
         for f in doc.get("files", []):
             for ac in f.get("aircraft", []):
                 # compact tar1090 array: [hex, alt, gs, track, lat, lon, ...]
@@ -182,6 +186,20 @@ def build_points():
                     cone_all[bi] = dist
                 if alt < LOW_ALT_FT and dist > cone_low[bi]:
                     cone_low[bi] = dist
+
+    # Download + decompress + parse chunks in parallel — network latency
+    # dominates a serial loop, especially for a remote feeder. Results are folded
+    # in as they complete, keeping only a few decompressed chunks live at once.
+    with ThreadPoolExecutor(max_workers=max(1, FETCH_WORKERS)) as ex:
+        futures = {ex.submit(_load_chunk, name): name for name in names}
+        for fut in as_completed(futures):
+            try:
+                doc = fut.result()
+            except Exception as e:
+                sys.stderr.write("chunk %s failed: %s\n" % (futures[fut], e))
+                continue
+            n_chunks += 1
+            consume(doc)
 
     return {
         "ok": True,
