@@ -126,9 +126,9 @@ built-in list and **survives every update**, so you never touch a tracked file:
     # edit cities.local.json — a JSON array of [ "label", lat, lon ] entries
 
 The server serves it at `/cities`; only entries within range of the receiver are
-drawn. If the file is absent, the built-in defaults are used. (In Docker, put
-`cities.local.json` next to `server.py` in the repo before building, or bind-mount
-it in — it just needs to sit beside `server.py` in the container.)
+drawn. If the file is absent, the built-in defaults are used. Under Docker, create
+`cities.local.json` in the repo folder *before* `docker compose up --build` — the
+Dockerfile copies it into the image at build time (rebuild after editing it).
 
 ## Endpoints
 

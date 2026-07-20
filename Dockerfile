@@ -2,7 +2,11 @@
 FROM python:3.12-alpine
 
 WORKDIR /app
-COPY server.py index.html adsbvue_favicon.png ./
+# The cities.local.json* glob always matches the committed .example (so the build
+# never fails on a fresh clone) and also pulls in a real cities.local.json when
+# one sits in the build context — that's how a deployment's own city labels get
+# into the image. See "Customizing the map" in the README.
+COPY server.py index.html adsbvue_favicon.png cities.local.json* ./
 
 ENV ADSB_ULTRAFEEDER=http://127.0.0.1 \
     ADSB_PORT=24556
