@@ -12,6 +12,9 @@ It reads tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
 `chunk_*.gz`), converts every aircraft observation to bearing / distance /
 altitude relative to the receiver, and serves a self-contained Three.js page.
 
+> For a more in-depth description of how the Python server and the Three.js
+> frontend actually work, see **[DETAILS.md](DETAILS.md)**.
+
 ## Render modes (toggle in the UI)
 
 - **Density volume** — observations binned into 3D cells drawn as translucent,
