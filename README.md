@@ -98,9 +98,20 @@ services:
 Keep `.env` comments on their own line (not after a value). If you use *both*,
 `environment:` entries win over `env_file:`.
 
+**Apply your changes.** After editing `docker-compose.yml` or `.env`, re-run it to
+recreate the container with the new settings:
+
+```
+docker compose up -d
+```
+
+Add `--build` (`docker compose up -d --build`) whenever the **code** changed too —
+e.g. after a `git pull` — so the image is rebuilt. It's always safe to include
+`--build`.
+
 **Without Docker.** Export the vars (`ADSB_ULTRAFEEDER=... python3 server.py`) or
 drop a `.env` next to `server.py` — it auto-loads one. A real environment
-variable always overrides the file.
+variable always overrides the file. Restart the process to pick up changes.
 
 ## Customizing the map
 
@@ -127,6 +138,10 @@ Then open `http://<host>:24556/`. Host networking lets the container read
 tar1090 at `127.0.0.1:80` and serve the viewer on the host's `:24556`. To run it
 somewhere else, use bridge networking and set `ADSB_ULTRAFEEDER` to your tar1090
 host — see `docker-compose.yml`.
+
+**Updating:** pull the latest code and rebuild —
+
+    git pull && docker compose up -d --build
 
 ## Run as a service
 
