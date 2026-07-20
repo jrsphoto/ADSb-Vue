@@ -137,6 +137,7 @@ input[type=range]::-moz-range-thumb {
 
   <div class="sec">Terrain</div>
   <div class="btns">
+    <button class="view" id="compareBtn" title="Recolour the measured cone by how it compares to the terrain horizon">&#9681; Compare to horizon</button>
     <button class="view" id="terrainBtn" title="Line-of-sight horizon predicted from terrain + earth curvature">&#9650; Predicted horizon</button>
     <div id="terrainInfo" style="font-size:10px; color:#1a3a50; line-height:1.5"></div>
   </div>
@@ -189,6 +190,16 @@ input[type=range]::-moz-range-thumb {
   <div class="li"><span class="ld" style="background:hsl(108,85%,50%)"></span> 5k &ndash; 20k ft</div>
   <div class="li"><span class="ld" style="background:hsl(44,85%,50%)"></span> &lt; 5k ft</div>
   <div class="li"><span class="ld" style="background:#60a5fa; border-radius:50%"></span> Receiver</div>
+</div>
+
+<div id="cmpLegend" style="display:none; position:fixed; bottom:16px; left:16px;
+  background:rgba(6,9,15,0.75); border:1px solid #0e2a40; border-radius:7px;
+  padding:9px 13px; font-size:10px; color:#3a6070; flex-direction:column; gap:5px; backdrop-filter:blur(4px)">
+  <div class="li"><span class="ld" style="background:rgb(51,204,71); border-radius:50%"></span> matches horizon</div>
+  <div class="li"><span class="ld" style="background:rgb(235,41,31); border-radius:50%"></span> higher than terrain allows</div>
+  <div class="li"><span class="ld" style="background:rgb(51,122,245); border-radius:50%"></span> below the horizon</div>
+  <div class="li"><span class="ld" style="background:rgb(41,48,61); border-radius:50%"></span> no low-altitude traffic</div>
+  <div style="color:#2a4a5a; max-width:158px; line-height:1.4">only judged where low traffic flew (&lt;18k ft measured)</div>
 </div>
 
 <div id="hint">
@@ -463,13 +474,27 @@ function buildShell(pts) {
   const pos = new Float32Array(cols * N_R * 3);
   const col = new Float32Array(cols * N_R * 3);
   const valid = (ci, ri) => { const ai = ci % N_AZ; return ri <= rmaxCol[ai] && !Number.isNaN(sm[ai*N_R+ri]); };
+  // Compare mode recolours the measured floor by how it stacks up against the
+  // terrain-predicted horizon (green = matches physics, red = higher/worse than
+  // terrain allows, blue = hearing below the predicted horizon).
+  const cmp = compareMode && DEM.grid;
   for (let ci = 0; ci < cols; ci++) {
-    const ai = ci % N_AZ, azRad = ci * AZ * DEG;
+    const ai = ci % N_AZ, azRad = ci * AZ * DEG, brgDeg = ci * AZ;
     for (let ri = 0; ri < N_R; ri++) {
       const idx = (ci * N_R + ri) * 3, r = ri * RSTEP;
       const altFt = Number.isNaN(sm[ai*N_R+ri]) ? 0 : sm[ai*N_R+ri];
       pos[idx] = r * Math.cos(azRad); pos[idx+1] = altFt * ALT_SCALE; pos[idx+2] = r * Math.sin(azRad);
-      const [cr, cg, cb] = altColor(altFt);
+      let cr, cg, cb;
+      if (cmp) {
+        const pf = predictedFloorAt(brgDeg, r);
+        // Only judge where low traffic actually flew (a low measured floor). Above
+        // the ceiling the floor just reflects "nothing low came here", not poor
+        // coverage — show it neutral rather than alarming red.
+        if (pf === pf && altFt <= COMPARE_CEIL_FT) [cr, cg, cb] = deltaColor(altFt - pf);
+        else [cr, cg, cb] = C_NODATA;
+      } else {
+        [cr, cg, cb] = altColor(altFt);
+      }
       col[idx] = cr; col[idx+1] = cg; col[idx+2] = cb;
     }
   }
@@ -891,6 +916,11 @@ function wireUI() {
       if (recording || preparing) return;
       endPlaybackForEdit();
       mode = btn.dataset.mode;
+      if (compareMode && mode !== 'shell') {   // compare only applies to the cone
+        compareMode = false;
+        document.getElementById('compareBtn').classList.remove('on');
+        setCompareLegend(false);
+      }
       document.querySelectorAll('button[data-mode]').forEach(b => b.classList.toggle('on', b === btn));
       rebuild();
     });
@@ -956,6 +986,7 @@ function wireUI() {
     });
   });
   document.getElementById('terrainBtn').addEventListener('click', toggleTerrain);
+  document.getElementById('compareBtn').addEventListener('click', toggleCompare);
   document.getElementById('vNorth').addEventListener('click', () => {
     camera.up.set(1,0,0); camera.position.set(0,360,0); controls.target.set(0,0,0); controls.update();
   });
@@ -1254,11 +1285,51 @@ function buildHorizon(grid) {
   return g;
 }
 
-let horizonGroup = null, terrainBusy = false;
+// Predicted floor (ft MSL) at an arbitrary bearing/range, bilinear over the grid.
+function predictedFloorAt(brgDeg, rNm) {
+  const g = DEM.grid; if (!g) return NaN;
+  const fa = (((brgDeg % 360) + 360) % 360) / g.AZ;
+  const a0 = Math.floor(fa) % g.N_AZ, a1 = (a0 + 1) % g.N_AZ, wb = fa - Math.floor(fa);
+  const fr = Math.min(g.N_R - 1, Math.max(0, rNm / g.RSTEP));
+  const r0 = Math.floor(fr), r1 = Math.min(g.N_R - 1, r0 + 1), wr = fr - r0;
+  const f = g.floor;
+  return (f[a0][r0] * (1 - wr) + f[a0][r1] * wr) * (1 - wb)
+       + (f[a1][r0] * (1 - wr) + f[a1][r1] * wr) * wb;
+}
+// measured - predicted delta -> colour. 0 = green (matches), + = red (worse than
+// terrain allows), - = blue (hearing below the predicted horizon).
+const _lerp3 = (a, b, t) => [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t, a[2] + (b[2]-a[2])*t];
+const C_MATCH = [0.20, 0.80, 0.28], C_WORSE = [0.92, 0.16, 0.12], C_BEAT = [0.20, 0.48, 0.96];
+const C_NODATA = [0.16, 0.19, 0.24];   // no low-altitude traffic here to judge
+const DELTA_FULL_FT = 6000;    // delta at which the colour saturates
+const COMPARE_CEIL_FT = 18000; // only compare where the measured floor is this low
+                               // (i.e. low traffic actually flew there to measure)
+function deltaColor(dFt) {
+  const t = Math.max(-1, Math.min(1, dFt / DELTA_FULL_FT));
+  return t >= 0 ? _lerp3(C_MATCH, C_WORSE, t) : _lerp3(C_MATCH, C_BEAT, -t);
+}
+
+let horizonGroup = null, terrainBusy = false, compareMode = false;
+
+// Fetch tiles (once) and compute the predicted-floor grid. No rendering.
+async function ensureTerrain(onPct) {
+  if (DEM.grid) return true;
+  if (!DEM.ready) {
+    if (onPct) onPct(0);
+    await prefetchDEM(DATA.recv_lat, DATA.recv_lon, (d, t) => onPct && onPct(Math.round(d / t * 100)));
+    DEM.ready = true;
+  }
+  const groundM = elevM(DATA.recv_lat, DATA.recv_lon);
+  DEM.antFt = (groundM === groundM ? groundM * FT_PER_M : 0) + (DATA.antenna_agl_ft || 30);
+  DEM.grid = computePredictedFloor(DATA.recv_lat, DATA.recv_lon);
+  const info = document.getElementById('terrainInfo');
+  if (info) info.textContent = 'antenna ' + Math.round(DEM.antFt) + ' ft MSL · ' + DEM.tiles.size + ' tiles';
+  return !!DEM.grid;
+}
+
 async function toggleTerrain() {
   const btn = document.getElementById('terrainBtn');
-  const info = document.getElementById('terrainInfo');
-  if (horizonGroup) {                 // hide
+  if (horizonGroup) {                 // hide the surface
     scene.remove(horizonGroup); disposeGroup(horizonGroup); horizonGroup = null;
     btn.classList.remove('on'); btn.innerHTML = '&#9650; Predicted horizon';
     return;
@@ -1266,24 +1337,41 @@ async function toggleTerrain() {
   if (terrainBusy) return;
   terrainBusy = true; btn.disabled = true;
   try {
-    if (!DEM.ready) {
-      btn.innerHTML = '&#9650; loading terrain… 0%';
-      await prefetchDEM(DATA.recv_lat, DATA.recv_lon,
-        (d, t) => { btn.innerHTML = '&#9650; loading terrain… ' + Math.round(d / t * 100) + '%'; });
-      DEM.ready = true;
-    }
-    const groundM = elevM(DATA.recv_lat, DATA.recv_lon);
-    DEM.antFt = (groundM === groundM ? groundM * FT_PER_M : 0) + (DATA.antenna_agl_ft || 30);
-    DEM.grid = computePredictedFloor(DATA.recv_lat, DATA.recv_lon);
+    await ensureTerrain(p => { btn.innerHTML = '&#9650; loading terrain… ' + p + '%'; });
     horizonGroup = buildHorizon(DEM.grid);
     scene.add(horizonGroup);
-    btn.classList.add('on'); btn.innerHTML = '&#9650; Predicted horizon';
-    if (info) info.textContent = 'antenna ' + Math.round(DEM.antFt) + ' ft MSL · '
-      + DEM.tiles.size + ' tiles';
+    btn.classList.add('on');
   } catch (e) {
-    btn.innerHTML = '&#9650; terrain failed';
-    if (info) info.textContent = String(e.message || e);
-  } finally { terrainBusy = false; btn.disabled = false; }
+    document.getElementById('terrainInfo').textContent = 'terrain failed: ' + (e.message || e);
+  } finally { btn.innerHTML = '&#9650; Predicted horizon'; terrainBusy = false; btn.disabled = false; }
+}
+
+// M2 headline: recolour the measured cone by its gap to the predicted horizon.
+function setCompareLegend(on) {
+  document.getElementById('legend').style.display = on ? 'none' : 'flex';
+  document.getElementById('cmpLegend').style.display = on ? 'flex' : 'none';
+}
+async function toggleCompare() {
+  const btn = document.getElementById('compareBtn');
+  if (compareMode) {
+    compareMode = false; btn.classList.remove('on'); btn.innerHTML = '&#9681; Compare to horizon';
+    setCompareLegend(false); rebuild(); return;
+  }
+  if (terrainBusy) return;
+  terrainBusy = true; btn.disabled = true;
+  try {
+    await ensureTerrain(p => { btn.innerHTML = '&#9681; loading… ' + p + '%'; });
+    compareMode = true; btn.classList.add('on');
+    if (mode !== 'shell') {   // comparison only means anything on the cone
+      endPlaybackForEdit();
+      mode = 'shell';
+      document.querySelectorAll('button[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === 'shell'));
+    }
+    setCompareLegend(true);
+    rebuild();
+  } catch (e) {
+    document.getElementById('terrainInfo').textContent = 'terrain failed: ' + (e.message || e);
+  } finally { btn.innerHTML = '&#9681; Compare to horizon'; terrainBusy = false; btn.disabled = false; }
 }
 
 fetch('/cone').then(r => r.json()).then(d => {
