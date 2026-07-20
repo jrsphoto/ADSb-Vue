@@ -133,6 +133,15 @@ input[type=range]::-moz-range-thumb {
     </div>
   </div>
 
+  <div class="sec" id="tlSec" style="display:none">Timeline &mdash; coverage over the window</div>
+  <div class="btns" id="tlCtl" style="display:none">
+    <div style="display:flex; align-items:center; gap:8px">
+      <button class="view" id="tlPlay" style="width:34px; justify-content:center; flex:0 0 auto">&#9654;</button>
+      <input type="range" id="tlScrub" min="0" max="1000" value="1000" style="flex:1">
+    </div>
+    <div id="tlLabel" style="font-size:10px; color:#5a86a0; padding-top:1px"></div>
+  </div>
+
   <div class="sec">Altitude bands</div>
   <div class="btns">
     <button class="max on" data-band="max">
@@ -191,6 +200,9 @@ let mode = 'voxel';
 const bands = { max: true, vhigh: true, high: true, mid: true, low: true };
 let displayOpacity = 0.32;   // 0..1 — "Solidity" slider (1 = solid object)
 let smoothing = 0.5;         // 0..1 — "Smoothing" slider
+let tMin = 0, tMax = 0;      // timeline window bounds (epoch seconds)
+let playCut = 0;             // reveal cutoff: show points first seen at or before this
+let playing = false;
 
 // Push the current Solidity value onto the live geometry without a rebuild.
 // Roles are tagged on each material so fill/surface, wireframe and points each
@@ -236,7 +248,10 @@ function bandOf(a) {
   return 'low';
 }
 function activePoints() {
-  return DATA.points.filter(p => bands[bandOf(p[2])]);
+  // altitude-band filter, plus the timeline reveal: when the scrubber is pulled
+  // back from the end, show only points first heard at or before playCut.
+  const timeOn = tMax > tMin && playCut < tMax;
+  return DATA.points.filter(p => bands[bandOf(p[2])] && (!timeOn || p[3] <= playCut));
 }
 
 // ---- render mode: point cloud ---------------------------------------------
@@ -527,6 +542,7 @@ function initScene(data) {
   rebuild();
   updateMeta(data);
   wireUI();
+  setupTimeline(data);
 
   addEventListener('resize', () => {
     camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
@@ -566,6 +582,47 @@ function updateMeta(d) {
     'max range <b style="color:#4a8aaa">' + maxAll + ' nm</b>';
 }
 
+// ---- timeline (coverage-over-window playback) ------------------------------
+const clock = e => new Date(e*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+function timelineLabel() {
+  if (tMax <= tMin) return '';
+  const span = ((tMax - tMin)/3600).toFixed(1);
+  return playCut >= tMax
+    ? 'full window — ' + clock(tMin) + '–' + clock(tMax) + ' (' + span + ' h)'
+    : clock(playCut) + '  ·  +' + ((playCut - tMin)/3600).toFixed(1) + ' h of ' + span + ' h';
+}
+function setupTimeline(d) {
+  tMin = d.t_min || 0; tMax = d.t_max || 0; playCut = tMax;
+  const has = tMax > tMin;
+  document.getElementById('tlSec').style.display = has ? '' : 'none';
+  document.getElementById('tlCtl').style.display = has ? '' : 'none';
+  document.getElementById('tlScrub').value = 1000;
+  document.getElementById('tlPlay').innerHTML = '&#9654;';
+  playing = false;
+  document.getElementById('tlLabel').textContent = timelineLabel();
+}
+let _playLast = 0, _lastTLRebuild = 0;
+const PLAY_MS = 18000;   // wall-clock seconds to sweep the whole window
+function playStep(ts) {
+  if (!playing) return;
+  const dt = _playLast ? ts - _playLast : 16; _playLast = ts;
+  const span = tMax - tMin;
+  playCut = Math.min(tMax, playCut + span * (dt / PLAY_MS));
+  document.getElementById('tlScrub').value = Math.round(((playCut - tMin)/span) * 1000);
+  document.getElementById('tlLabel').textContent = timelineLabel();
+  if (ts - _lastTLRebuild > 110) { _lastTLRebuild = ts; rebuild(); }  // ~9 fps geometry
+  if (playCut >= tMax) { playing = false; document.getElementById('tlPlay').innerHTML = '&#9654;'; rebuild(); return; }
+  requestAnimationFrame(playStep);
+}
+function togglePlay() {
+  const btn = document.getElementById('tlPlay');
+  if (playing) { playing = false; btn.innerHTML = '&#9654;'; return; }
+  if (playCut >= tMax) playCut = tMin;   // restart from the beginning
+  playing = true; _playLast = 0; _lastTLRebuild = 0;
+  btn.innerHTML = '&#10073;&#10073;';    // ‖
+  requestAnimationFrame(playStep);
+}
+
 function wireUI() {
   // Mobile / small screens: start collapsed behind the ☰ button; tap toggles.
   const smallMQ = matchMedia('(max-width: 680px), (pointer: coarse) and (max-width: 900px)');
@@ -601,6 +658,18 @@ function wireUI() {
     clearTimeout(smTimer);
     smTimer = setTimeout(rebuild, 140);
   });
+  // Timeline — scrub reveals coverage up to a time; play sweeps the window.
+  const scrub = document.getElementById('tlScrub');
+  let scrubTimer = null;
+  scrub.addEventListener('input', () => {
+    if (playing) togglePlay();                    // dragging stops playback
+    playCut = tMin + (scrub.value / 1000) * (tMax - tMin);
+    document.getElementById('tlLabel').textContent = timelineLabel();
+    clearTimeout(scrubTimer);
+    scrubTimer = setTimeout(rebuild, 60);
+  });
+  document.getElementById('tlPlay').addEventListener('click', togglePlay);
+
   document.querySelectorAll('button[data-band]').forEach(btn => {
     btn.addEventListener('click', () => {
       const b = btn.dataset.band; bands[b] = !bands[b];
@@ -620,7 +689,7 @@ function wireUI() {
     const btn = document.getElementById('vRefresh');
     btn.textContent = '⟳ Refreshing…'; btn.disabled = true;
     fetch('/cone?refresh=true').then(r => r.json()).then(d => {
-      DATA = d; rebuild(); updateMeta(d);
+      DATA = d; rebuild(); updateMeta(d); setupTimeline(d);
       document.getElementById('cacheInfo').textContent = 'Live — fetched ' + new Date().toLocaleTimeString();
       btn.textContent = '↻ Refresh data'; btn.disabled = false;
     }).catch(e => { btn.textContent = '✕ ' + e.message; btn.disabled = false; });

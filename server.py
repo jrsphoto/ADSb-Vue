@@ -170,7 +170,7 @@ def build_cones(points):
     over all altitudes (cone_all) and restricted to below LOW_ALT_FT (cone_low)."""
     cone_all = [0.0] * BEARING_BINS
     cone_low = [0.0] * BEARING_BINS
-    for brg, dist, alt in points:
+    for brg, dist, alt, *_ in points:
         bi = int(round(brg)) % BEARING_BINS
         if dist > cone_all[bi]:
             cone_all[bi] = dist
@@ -192,14 +192,17 @@ def build_points():
         names = names[-MAX_CHUNKS:]
 
     points = []
-    seen = set()      # coarse (lat, lon, alt-bin) cells already taken this run
+    seen = {}         # coarse (lat, lon, alt-bin) cell -> index into points
     n_chunks = 0
     # Single pass over every observation: de-duplicate onto a coarse grid (this is
     # a coverage map, not a traffic replay) and convert each kept hit to
-    # receiver-relative polar coordinates.
+    # receiver-relative polar coordinates. Each kept point also carries the
+    # earliest time its cell was heard (t, epoch seconds) so the client can
+    # animate coverage building up over the retained window.
     for doc in iter_chunks(names):
         n_chunks += 1
         for f in doc.get("files", []):
+            now_i = int(f.get("now", 0))
             for ac in f.get("aircraft", []):
                 if len(ac) < 6:      # compact tar1090 row: [hex,alt,gs,trk,lat,lon,...]
                     continue
@@ -208,14 +211,20 @@ def build_points():
                     continue
                 alt = _alt_ft(ac[1])
                 key = (round(lat / STEP), round(lon / STEP), int(alt // ALT_BIN_FT))
-                if key in seen:
+                idx = seen.get(key)
+                if idx is not None:                 # already have this cell —
+                    if now_i and now_i < points[idx][3]:
+                        points[idx][3] = now_i       # keep the earliest sighting
                     continue
-                seen.add(key)
                 brg, dist = bearing_distance(sin1, cos1, rlat_r, rlon_r, lat, lon)
                 if dist > MAX_RANGE_NM:   # discard obvious bad positions
                     continue
-                points.append([round(brg, 1), round(dist, 2), int(alt)])
+                seen[key] = len(points)
+                points.append([round(brg, 1), round(dist, 2), int(alt), now_i])
 
+    times = [p[3] for p in points if p[3]]
+    t_min = min(times) if times else 0
+    t_max = max(times) if times else 0
     cone_all, cone_low = build_cones(points)
     return {
         "ok": True,
@@ -225,7 +234,9 @@ def build_points():
         "recv_lon": rlon,
         "count": len(points),
         "chunks": n_chunks,
-        "points": points,
+        "t_min": t_min,          # earliest / latest first-seen time in the window
+        "t_max": t_max,          # (epoch seconds) — drives the timeline scrubber
+        "points": points,        # [bearing, dist_nm, alt_ft, first_seen_epoch]
         "cone_all": cone_all,
         "cone_low": cone_low,
     }
