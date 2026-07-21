@@ -236,6 +236,7 @@ input[type=range]::-moz-range-thumb {
     <button class="view" id="vOblique">&#x2714; Reset view</button>
     <button class="view" id="vRefresh" style="margin-top:4px;border-color:#0e3050">&#x21BB; Refresh data</button>
     <div id="cacheInfo" style="font-size:10px;color:#1a3a50;line-height:1.6;padding-top:2px"></div>
+    <button class="view" id="vReset" style="border-color:#123049;color:#3a6a84" title="Clear the display settings saved in this browser and reload">&#x21BA; Reset saved settings</button>
   </div>
 </div>
 
@@ -658,8 +659,60 @@ function groundLine(pts, color, opacity = 0.3) {
   return new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity }));
 }
 
+// ---- settings persistence (browser localStorage) --------------------------
+// Remembers the panel selections and map orientation between visits. Purely
+// functional, first-party, on-device: render mode / sliders / bands / view are
+// not personal data, never leave the browser, and are not used for tracking — so
+// no consent gate is needed. Cleared with the Reset button (or normal browser
+// site-data controls). NOTE: if analytics or any third-party storage is ever
+// added, that WOULD need a consent mechanism — this does not.
+const LS_KEY = 'adsbvue.settings.v1';
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; }
+  catch (e) { return {}; }
+}
+let _saveTimer = null;
+function saveSettings() {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify({
+        mode, opacity: displayOpacity, smoothing, bands, loop: loopOn, speed: playSpeed,
+        cam: camera && { p: camera.position.toArray(), t: controls.target.toArray(), u: camera.up.toArray() },
+      }));
+    } catch (e) { /* storage disabled / full / private mode — silently skip */ }
+  }, 250);
+}
+const _ok3 = a => Array.isArray(a) && a.length === 3 && a.every(Number.isFinite);
+// Apply loaded values onto the module state (call before the first rebuild).
+function applySavedState(s) {
+  if (s.mode) mode = s.mode;
+  if (typeof s.opacity === 'number') displayOpacity = s.opacity;
+  if (typeof s.smoothing === 'number') smoothing = s.smoothing;
+  if (s.bands) for (const k in bands) if (k in s.bands) bands[k] = !!s.bands[k];
+  if (typeof s.loop === 'boolean') loopOn = s.loop;
+  if (typeof s.speed === 'number') playSpeed = s.speed;
+}
+// Sync the DOM controls to the current module state (call after wireUI).
+function applySettingsToUI() {
+  document.querySelectorAll('button[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+  const op = document.getElementById('opacity');
+  op.value = Math.round(displayOpacity * 100);
+  document.getElementById('opVal').textContent = op.value + '%';
+  const sm = document.getElementById('smooth');
+  sm.value = Math.round(smoothing * 100);
+  document.getElementById('smVal').textContent = smoothing < 0.2 ? 'crisp' : smoothing < 0.45 ? 'low'
+    : smoothing < 0.7 ? 'medium' : smoothing < 0.9 ? 'high' : 'max';
+  document.querySelectorAll('button[data-band]').forEach(b => b.classList.toggle('on', bands[b.dataset.band]));
+  document.getElementById('tlLoop').classList.toggle('on', loopOn);
+  document.getElementById('tlSpeed').innerHTML = playSpeed + '&times;';
+  applyOpacity();
+}
+
 function initScene(data) {
   DATA = data;
+  const _saved = loadSettings();
+  applySavedState(_saved);
   const W = innerWidth, H = innerHeight;
 
   renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -687,7 +740,14 @@ function initScene(data) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.07;
   controls.target.set(0, 20, 0);
+  // Restore the saved map orientation, if any (guarded against bad values).
+  if (_saved.cam && _ok3(_saved.cam.p) && _ok3(_saved.cam.t)) {
+    camera.position.fromArray(_saved.cam.p);
+    controls.target.fromArray(_saved.cam.t);
+    if (_ok3(_saved.cam.u)) camera.up.fromArray(_saved.cam.u);
+  }
   controls.update();
+  controls.addEventListener('end', saveSettings);   // save orientation when orbit settles
 
   loadStateMap(data);
 
@@ -720,6 +780,7 @@ function initScene(data) {
   rebuild();
   updateMeta(data);
   wireUI();
+  applySettingsToUI();
   setupTimeline(data);
 
   addEventListener('resize', () => {
@@ -1094,6 +1155,7 @@ function wireUI() {
       }
       document.querySelectorAll('button[data-mode]').forEach(b => b.classList.toggle('on', b === btn));
       rebuild();
+      saveSettings();
     });
   });
 
@@ -1103,6 +1165,7 @@ function wireUI() {
     displayOpacity = op.value / 100;
     opVal.textContent = op.value + '%';
     applyOpacity();
+    saveSettings();
   });
   // Smoothing — changes geometry, so debounce a rebuild while dragging.
   const sm = document.getElementById('smooth'), smVal = document.getElementById('smVal');
@@ -1115,6 +1178,7 @@ function wireUI() {
     endPlaybackForEdit();
     clearTimeout(smTimer);
     smTimer = setTimeout(rebuild, 140);
+    saveSettings();
   });
   // Timeline — scrub reveals coverage up to a time; play sweeps the window.
   const scrub = document.getElementById('tlScrub');
@@ -1134,6 +1198,7 @@ function wireUI() {
     if (recording) return;
     loopOn = !loopOn; loopBtn.classList.toggle('on', loopOn);
     if (reveal) reveal.loopFixed = undefined;      // let a running sweep follow the toggle
+    saveSettings();
   });
   // Speed cycle 0.5 → 1 → 2 → 4×.
   const speedBtn = document.getElementById('tlSpeed');
@@ -1142,6 +1207,7 @@ function wireUI() {
     if (recording) return;
     playSpeed = SPEEDS[(SPEEDS.indexOf(playSpeed) + 1) % SPEEDS.length];
     speedBtn.innerHTML = playSpeed + '&times;';
+    saveSettings();
   });
   // Export a WebM clip of the play-through.
   const exportBtn = document.getElementById('tlExport');
@@ -1154,6 +1220,7 @@ function wireUI() {
       endPlaybackForEdit();
       const b = btn.dataset.band; bands[b] = !bands[b];
       btn.classList.toggle('on', bands[b]); rebuild();
+      saveSettings();
     });
   });
   document.getElementById('terrainBtn').addEventListener('click', toggleTerrain);
@@ -1185,13 +1252,17 @@ function wireUI() {
     if (_ray.ray.intersectPlane(_ground, _hit)) setProfileBearing(Math.atan2(_hit.z, _hit.x) * 180 / Math.PI);
   });
   document.getElementById('vNorth').addEventListener('click', () => {
-    camera.up.set(1,0,0); camera.position.set(0,360,0); controls.target.set(0,0,0); controls.update();
+    camera.up.set(1,0,0); camera.position.set(0,360,0); controls.target.set(0,0,0); controls.update(); saveSettings();
   });
   document.getElementById('vSide').addEventListener('click', () => {
-    camera.up.set(0,1,0); camera.position.set(240,50,0); controls.target.set(0,25,0); controls.update();
+    camera.up.set(0,1,0); camera.position.set(240,50,0); controls.target.set(0,25,0); controls.update(); saveSettings();
   });
   document.getElementById('vOblique').addEventListener('click', () => {
-    camera.up.set(0,1,0); camera.position.set(-235,300,205); controls.target.set(0,25,0); controls.update();
+    camera.up.set(0,1,0); camera.position.set(-235,300,205); controls.target.set(0,25,0); controls.update(); saveSettings();
+  });
+  document.getElementById('vReset').addEventListener('click', () => {
+    try { localStorage.removeItem(LS_KEY); } catch (e) { /* nothing to clear */ }
+    location.reload();   // back to first-visit defaults
   });
   document.getElementById('vRefresh').addEventListener('click', () => {
     const btn = document.getElementById('vRefresh');

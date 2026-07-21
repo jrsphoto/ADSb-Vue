@@ -329,6 +329,18 @@ See `adsbvue.service` (a systemd **user** unit — adjust the path and
 
 It can run on any host that can reach your Ultrafeeder.
 
+## Privacy
+
+The viewer remembers your **display settings** — render mode, sliders, altitude
+bands, timeline loop/speed, and map orientation — in the browser's local storage
+so the page comes back the way you left it. It's purely functional and
+first-party: the values are display preferences (not personal data), they never
+leave your browser, and nothing is shared or used for tracking or analytics — so
+there's no consent banner. Clear them anytime with **Reset saved settings** in the
+panel (or your browser's site-data controls). The server itself stores no
+per-visitor data. *(If you fork this and add analytics or any third-party
+storage, that would need its own consent mechanism — this doesn't.)*
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
