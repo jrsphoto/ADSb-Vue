@@ -82,6 +82,8 @@ environment variables:
 | `ADSB_FOG_DENSITY` | `0.0012`             | Distance-fade density; `0` disables the fade |
 | `ADSB_DATA_DIR`    | *(unset)*            | Volume dir for long-term persistence (see below). Unset = no store. |
 | `ADSB_RETAIN_DAYS` | `30`                 | Store retention: drop cells not heard within N days (`0` = keep all) |
+| `ADSB_HEYWHATSTHAT_ID` | *(unset)*        | Your HeyWhatsThat panorama id — enables the HWT range-rings overlay |
+| `ADSB_HEYWHATSTHAT_ALTS_FT` | `10000,40000` | HWT ring altitudes (ft, comma-separated) |
 
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.
 Raise `ADSB_MAX_CHUNKS` (e.g. `0`) for the fullest envelope at the cost of a
@@ -205,6 +207,17 @@ Two things to keep in mind when reading it:
   bearing) to tell the two apart; green usually traces your busy arrival/departure
   corridors.
 
+**◌ HWT range rings** — if you feed [HeyWhatsThat](https://www.heywhatsthat.com)
+(most Ultrafeeder setups do; it's where tar1090's range rings come from), set
+`ADSB_HEYWHATSTHAT_ID` to your panorama id and this toggle draws those same
+trusted rings in 3D: each ring floats at its altitude and marks where a plane at
+that altitude drops below your horizon. It's an independent model of the same
+physics as the predicted horizon, so it doubles as a cross-check of both. The
+server fetches the data once and caches it (on the `data/` volume when present),
+so their free API is hit essentially never. Ring altitudes:
+`ADSB_HEYWHATSTHAT_ALTS_FT` (default `10000,40000`). The panorama must be for
+your receiver's location.
+
 ## Long-term coverage (persistence)
 
 By default the viewer shows the feeder's rolling history (~a day) and resets on
@@ -242,6 +255,7 @@ needed**, and it survives every update and container recreation. See
 - `GET /`        — the 3D viewer page
 - `GET /cone`    — observations as JSON (`?refresh=true` bypasses the cache)
 - `GET /cities`  — optional local city labels (your `cities.local.json`, else `[]`)
+- `GET /hwt`     — cached HeyWhatsThat horizon rings (`{}` when no id is set)
 - `GET /health`  — liveness
 
 ## Run via Docker (recommended)

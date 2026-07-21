@@ -35,6 +35,9 @@ Config via environment variables (or a .env file next to server.py — see
                      read from <dir> first. Unset = no persistence (default).
   ADSB_RETAIN_DAYS   store retention: drop cells not heard within N days
                      (default 30; 0 = keep everything)
+  ADSB_HEYWHATSTHAT_ID  HeyWhatsThat panorama id for your site (unset = off);
+                     serves its horizon rings at /hwt, fetched once + cached
+  ADSB_HEYWHATSTHAT_ALTS_FT  ring altitudes, ft (default 10000,40000)
 """
 
 import gzip
@@ -105,6 +108,9 @@ DATA_DIR = os.environ.get("ADSB_DATA_DIR", "").strip()   # volume dir; unset = n
 STORE_PATH = os.path.join(DATA_DIR, "adsbvue.db") if DATA_DIR else None
 RETAIN_DAYS = int(os.environ.get("ADSB_RETAIN_DAYS", "30"))  # store: drop cells not
                                                             # heard within N days (0 = keep all)
+# --- HeyWhatsThat range rings (optional) ---
+HWT_ID = os.environ.get("ADSB_HEYWHATSTHAT_ID", "").strip()      # panorama id; unset = off
+HWT_ALTS_FT = os.environ.get("ADSB_HEYWHATSTHAT_ALTS_FT", "10000,40000")  # ring altitudes
 if DATA_DIR:
     os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -220,6 +226,50 @@ def cities_file():
             return p
     p = os.path.join(HERE, "cities.local.json")
     return p if os.path.exists(p) else None
+
+
+_hwt = {"bytes": None, "fail_ts": 0.0}
+_hwt_lock = threading.Lock()
+HWT_RETRY_SECS = 600     # after a failed fetch, don't re-hit their API for 10 min
+
+
+def _hwt_payload():
+    """HeyWhatsThat horizon rings as JSON bytes ({} when unconfigured). The
+    panorama is static for a site, so fetch it once and cache it — in memory and,
+    when a data volume exists, on disk — out of respect for their free API."""
+    if not HWT_ID:
+        return b"{}"
+    with _hwt_lock:
+        if _hwt["bytes"]:
+            return _hwt["bytes"]
+        cache = os.path.join(DATA_DIR, "hwt_%s.json" % HWT_ID) if DATA_DIR else None
+        if cache and os.path.exists(cache):
+            try:
+                with open(cache, "rb") as fh:
+                    data = fh.read()
+                json.loads(data)               # validate; refetch if corrupt
+                _hwt["bytes"] = data
+                return data
+            except Exception:
+                pass
+        if time.time() - _hwt["fail_ts"] < HWT_RETRY_SECS:
+            return b"{}"
+        alts_m = ",".join(str(int(round(float(a) * 0.3048)))
+                          for a in HWT_ALTS_FT.split(",") if a.strip())
+        url = ("https://www.heywhatsthat.com/api/upintheair.json"
+               "?id=%s&refraction=0.25&alts=%s" % (HWT_ID, alts_m))
+        try:
+            data = _fetch(url)
+            json.loads(data)
+            _hwt["bytes"] = data
+            if cache:
+                with open(cache, "wb") as fh:
+                    fh.write(data)
+            return data
+        except Exception as e:
+            _hwt["fail_ts"] = time.time()
+            sys.stderr.write("heywhatsthat fetch failed: %s\n" % e)
+            return b"{}"
 
 
 def seed_data_dir():
@@ -454,6 +504,10 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         sys.stderr.write("cities.local.json ignored (%s)\n" % e)
                 self._send(200, body, "application/json", gz_ok=False)
+            elif path == "/hwt":
+                # HeyWhatsThat horizon rings (fetched once + cached); {} when
+                # ADSB_HEYWHATSTHAT_ID is unset, never a 404.
+                self._send(200, _hwt_payload(), "application/json")
             elif path == "/health":
                 self._send(200, json.dumps({"ok": True}), "application/json")
             else:

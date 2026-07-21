@@ -192,6 +192,7 @@ input[type=range]::-moz-range-thumb {
     <button class="view" id="compareBtn" title="Recolour the measured cone by how it compares to the terrain horizon">&#9681; Compare to horizon</button>
     <button class="view" id="terrainBtn" title="Line-of-sight horizon predicted from terrain + earth curvature">&#9650; Predicted horizon</button>
     <button class="view" id="profileBtn" title="Side-on profile of one bearing: terrain, horizon and the actual hits">&#8944; Bearing profile</button>
+    <button class="view" id="hwtBtn" title="Range rings from your HeyWhatsThat panorama (needs ADSB_HEYWHATSTHAT_ID)">&#9676; HWT range rings</button>
     <button class="view" id="helpBtn" style="border-color:#123049; color:#3a6a84">? What am I seeing?</button>
     <div id="terrainInfo" style="font-size:10px; color:#1a3a50; line-height:1.5"></div>
   </div>
@@ -308,6 +309,13 @@ input[type=range]::-moz-range-thumb {
       direction with the slider or by clicking the map. It's the way to settle an amber patch
       &mdash; if hits sit right down on the horizon line you have good low coverage there; if
       the low region is simply empty, no low traffic came through (not a gap).</p>
+
+    <h3>&#9676; HWT range rings</h3>
+    <p>The same horizon rings tar1090 draws, from your site's
+      <b>HeyWhatsThat</b> panorama: each floating ring is the boundary where a plane at
+      that altitude drops below your horizon. An independent model of the same physics
+      as the predicted horizon &mdash; a good cross-check against it and against the
+      measured cone. Needs <b>ADSB_HEYWHATSTHAT_ID</b> set to your panorama id.</p>
 
     <h3>Antenna height</h3>
     <p>The model needs your mast height above the ground; it reads your ground elevation from
@@ -1150,6 +1158,7 @@ function wireUI() {
   });
   document.getElementById('terrainBtn').addEventListener('click', toggleTerrain);
   document.getElementById('compareBtn').addEventListener('click', toggleCompare);
+  document.getElementById('hwtBtn').addEventListener('click', toggleHWT);
   // Terrain help overlay — on-demand, dismiss by ✕, backdrop, or Escape.
   const help = document.getElementById('helpOverlay');
   const openHelp = () => help.classList.add('open');
@@ -1682,6 +1691,53 @@ function closeProfile() {
   document.getElementById('profileBtn').classList.remove('on');
   document.getElementById('profilePanel').style.display = 'none';
   if (profileRay) { scene.remove(profileRay); profileRay.geometry.dispose(); profileRay.material.dispose(); profileRay = null; }
+}
+
+// ===== HeyWhatsThat range rings =============================================
+// Iso-altitude horizon contours from the site's HeyWhatsThat panorama — the same
+// trusted rings tar1090 draws: the boundary where a plane at each altitude drops
+// below your horizon. Each ring floats at its altitude, coloured on the shared
+// altitude ramp, so it lines up with the cone and the predicted-horizon surface.
+// The server fetches + caches the data; unconfigured -> {} and a gentle hint.
+let hwtGroup = null;
+async function toggleHWT() {
+  const btn = document.getElementById('hwtBtn');
+  const info = document.getElementById('terrainInfo');
+  if (hwtGroup) {
+    scene.remove(hwtGroup); disposeGroup(hwtGroup); hwtGroup = null;
+    btn.classList.remove('on');
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const d = await (await fetch('./hwt')).json();
+    const rings = d && d.rings;
+    if (!rings || !rings.length) {
+      info.textContent = 'no HWT data — set ADSB_HEYWHATSTHAT_ID (see README)';
+      return;
+    }
+    const RLAT = DATA.recv_lat, RLON = DATA.recv_lon, cosL = Math.cos(RLAT * DEG);
+    hwtGroup = new THREE.Group();
+    for (const ring of rings) {
+      const altFt = (ring.alt || 0) * FT_PER_M;   // HWT altitudes are metres
+      const y = altFt * ALT_SCALE;
+      const pts = (ring.points || []).map(([la, lo]) =>
+        new THREE.Vector3((la - RLAT) * 60, y, (lo - RLON) * cosL * 60));
+      if (pts.length < 3) continue;
+      pts.push(pts[0].clone());                   // close the loop
+      const [r, g, b] = altColor(altFt);
+      const mat = new THREE.LineBasicMaterial({
+        color: new THREE.Color(r, g, b), transparent: true, opacity: 0.9 });
+      hwtGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+      const lbl = textSprite(Math.round(altFt / 1000) + 'k ft', '#bfe4ff', 26);
+      lbl.position.set(pts[0].x, y + 4, pts[0].z);
+      hwtGroup.add(lbl);
+    }
+    scene.add(hwtGroup);
+    btn.classList.add('on');
+  } catch (e) {
+    info.textContent = 'HWT: ' + (e.message || e);
+  } finally { btn.disabled = false; }
 }
 
 fetch('./cone').then(r => r.json()).then(d => {

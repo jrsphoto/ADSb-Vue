@@ -150,6 +150,7 @@ the client accepts it and the body exceeds `GZIP_MIN_BYTES`.
 | `GET /` (`/view`, `/index.html`) | the viewer page |
 | `GET /cone` (`/data`) | the observation payload (`?refresh=true` bypasses cache) |
 | `GET /cities` | optional per-deployment city labels: `cities.local.json` if present next to `server.py`, else `[]` (never 404 → no console noise; invalid JSON → `[]`) |
+| `GET /hwt` | HeyWhatsThat horizon rings for `ADSB_HEYWHATSTHAT_ID`, fetched from their API once and cached (in memory + on the data volume); `{}` when unset or on failure (10-min retry backoff) |
 | `GET /health` | liveness |
 | `GET /adsbvue_favicon.png`, `/favicon.ico`, `/adsbvue_logo.png` | static assets |
 | `POST /_save?name=…` | debug-only: writes a posted canvas data-URL to `/tmp` (used for headless screenshot verification; harmless, unused by the app) |
@@ -286,6 +287,10 @@ height above sea level = the DEM elevation at the receiver + `antenna_agl_ft`.
   slider or a ground-plane raycast on click): terrain, the horizon line, and the
   actual hits — disambiguating an amber patch (hits on the line = good coverage;
   an empty low region = no low traffic, not a gap).
+- **◌ HWT range rings** overlays the site's HeyWhatsThat horizon rings (from
+  `/hwt`) as closed 3D line loops floating at their altitudes, coloured on the
+  shared altitude ramp — an independent model of the same physics, handy as a
+  cross-check of the predicted horizon and the measured cone.
 
 ### Debugging hook
 
