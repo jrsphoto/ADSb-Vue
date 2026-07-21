@@ -17,7 +17,8 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_ULTRAFEEDER   base URL of the tar1090 instance   (default http://127.0.0.1)
   ADSB_RECV_LAT      receiver latitude   (default: auto from /data/receiver.json)
   ADSB_RECV_LON      receiver longitude  (default: auto from /data/receiver.json)
-  ADSB_PORT          port to listen on   (default 24556)
+  ADSB_WEB_PORT      web-UI port to listen on (default 24556; alias: ADSB_PORT).
+                     NOT a data port — the ADS-B source is the URL in ADSB_ULTRAFEEDER
   ADSB_CACHE_SECS    seconds to cache parsed points (default 120)
   ADSB_MAX_CHUNKS    cap number of chunks read, newest-first (default 48, 0 = all)
   ADSB_CELL_NM       de-dup grid cell size, nm   (default 1.5)
@@ -75,7 +76,10 @@ _load_dotenv(os.path.join(HERE, ".env"))
 
 # --- tunable config (env vars, optionally via a .env file — see .env.example) ---
 ULTRAFEEDER = os.environ.get("ADSB_ULTRAFEEDER", "http://127.0.0.1").rstrip("/")
-PORT = int(os.environ.get("ADSB_PORT", "24556"))
+# Web-UI listen port. This is NOT an ADS-B data port — the data source is the
+# full URL in ADSB_ULTRAFEEDER (any host/port). ADSB_WEB_PORT is the clearer
+# name; ADSB_PORT is still honoured for back-compat.
+PORT = int(os.environ.get("ADSB_WEB_PORT", os.environ.get("ADSB_PORT", "24556")))
 CACHE_SECS = int(os.environ.get("ADSB_CACHE_SECS", "120"))
 MAX_CHUNKS = int(os.environ.get("ADSB_MAX_CHUNKS", "48"))         # newest-first, 0=all
 CELL_NM = float(os.environ.get("ADSB_CELL_NM", "1.5"))           # de-dup cell size (nm)

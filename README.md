@@ -63,8 +63,8 @@ environment variables:
 
 | Var                | Default              | Meaning                                   |
 |--------------------|----------------------|-------------------------------------------|
-| `ADSB_ULTRAFEEDER` | `http://127.0.0.1`   | Base URL of your tar1090 instance         |
-| `ADSB_PORT`        | `24556`              | Port to listen on                         |
+| `ADSB_ULTRAFEEDER` | `http://127.0.0.1`   | Base URL of your tar1090 instance (the ADS-B **data source** — any host/port) |
+| `ADSB_WEB_PORT`    | `24556`              | Web-UI port to listen on (alias: `ADSB_PORT`). Not a data port. |
 | `ADSB_RECV_LAT`    | auto                 | Receiver latitude (else `/data/receiver.json`) |
 | `ADSB_RECV_LON`    | auto                 | Receiver longitude                        |
 | `ADSB_MAX_CHUNKS`  | `48`                 | Newest-first chunk cap (0 = all history)  |
@@ -213,9 +213,29 @@ near-zero impact. From a clone of this repo on that host:
     docker compose up -d --build
 
 Then open `http://<host>:24556/`. Host networking lets the container read
-tar1090 at `127.0.0.1:80` and serve the viewer on the host's `:24556`. To run it
-somewhere else, use bridge networking and set `ADSB_ULTRAFEEDER` to your tar1090
-host — see `docker-compose.yml`.
+tar1090 at `127.0.0.1:80` and serve the viewer on the host's `:24556`.
+
+**Somewhere else / remote feeder (bridge networking).** Drop host networking,
+map a port, and point `ADSB_ULTRAFEEDER` at your tar1090 (a public HTTPS map URL
+works too):
+
+```yaml
+services:
+  adsbvue:
+    build: .
+    container_name: adsbvue
+    restart: unless-stopped
+    environment:
+      - ADSB_ULTRAFEEDER=https://your.tar1090.example/map
+      - ADSB_MAX_CHUNKS=0
+    ports:
+      - 8077:24556          # host:container — the container's port is ADSB_WEB_PORT
+```
+
+**Behind a reverse proxy.** The page uses relative paths, so serving it under a
+subpath works — just make sure the location has a **trailing slash** (e.g.
+`location /adsbvue/ { proxy_pass http://adsbvue:24556/; }`) so `./cone` resolves
+to `…/adsbvue/cone`.
 
 **Updating:** pull the latest code and rebuild —
 
