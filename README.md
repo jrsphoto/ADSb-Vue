@@ -242,7 +242,30 @@ needed**, and it survives every update and container recreation. See
 ## Run via Docker (recommended)
 
 Easiest on the same host that runs Ultrafeeder — co-located, always-on,
-near-zero impact. From a clone of this repo on that host:
+near-zero impact.
+
+**Prebuilt image (no clone needed).** Every push to `main` is auto-built for
+amd64 **and** arm64 (Raspberry Pi) and published to GitHub Container Registry.
+Just point a compose file at it:
+
+```yaml
+services:
+  adsbvue:
+    image: ghcr.io/jrsphoto/adsbvue:latest
+    container_name: adsbvue
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - ADSB_DATA_DIR=/data
+    volumes:
+      - ./data:/data
+```
+
+Update with `docker compose pull && docker compose up -d`. (With a prebuilt
+image your `cities.local.json` lives on the `data/` volume — see the
+persistence section above.)
+
+**Build from source.** From a clone of this repo:
 
     docker compose up -d --build
 
