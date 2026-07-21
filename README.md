@@ -206,8 +206,9 @@ By default the viewer shows the feeder's rolling history (~a day) and resets on
 container recreation. Set **`ADSB_DATA_DIR`** to a mapped volume and coverage
 **accumulates there** across restarts, so you can build a weeks/months-long
 envelope and the timeline sweeps the whole period. It's optional and off unless
-you set it. That directory also holds a **live-editable** `cities.local.json`
-(edit it on the volume, no rebuild needed). See
+you set it. Your `cities.local.json` also lives on that volume: on first run the
+app seeds it there from your existing copy, and from then on it's **live-editable**
+— edit it on the volume and reload, no rebuild. See
 [docs/persistence.md](docs/persistence.md) for the design.
 
 ```yaml

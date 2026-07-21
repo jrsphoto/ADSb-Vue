@@ -222,6 +222,23 @@ def cities_file():
     return p if os.path.exists(p) else None
 
 
+def seed_data_dir():
+    """First run with a volume: if there's a baked-in cities.local.json but none on
+    the volume yet, copy it over so the volume holds the canonical, live-editable
+    copy. Never overwrites an existing one."""
+    if not DATA_DIR:
+        return
+    dst = os.path.join(DATA_DIR, "cities.local.json")
+    src = os.path.join(HERE, "cities.local.json")
+    if os.path.exists(src) and not os.path.exists(dst):
+        try:
+            import shutil
+            shutil.copyfile(src, dst)
+            sys.stderr.write("seeded cities.local.json onto %s\n" % DATA_DIR)
+        except Exception as e:
+            sys.stderr.write("cities seed skipped: %s\n" % e)
+
+
 def _store_conn():
     con = sqlite3.connect(STORE_PATH)
     con.execute("PRAGMA journal_mode=WAL")   # crash-safe, no full-file rewrites
@@ -475,6 +492,10 @@ def main():
     print("ADSb-Vue  ultrafeeder=%s  port=%d" % (ULTRAFEEDER, PORT))
     if STORE_PATH:
         print("persistence: accumulating coverage in %s" % STORE_PATH)
+        seed_data_dir()
+    cf = cities_file()
+    if cf:
+        print("cities: %s" % cf)
     try:
         rlat, rlon = receiver()
         print("receiver: %.6f, %.6f" % (rlat, rlon))

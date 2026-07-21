@@ -20,8 +20,11 @@ behavior (no persistence). When set, that directory holds:
 - `adsbvue.db` — the coverage store (SQLite; part of the Python stdlib, so still
   zero third-party dependencies).
 - `cities.local.json` — read from here first if present, so it's **live-editable**
-  on the volume (no image rebuild). Falls back to the copy baked next to
-  `server.py`, then to the built-in defaults.
+  on the volume (no image rebuild). On first run the app **seeds** it here from an
+  existing baked-in copy (never overwriting one already on the volume), so a volume
+  deployment's cities end up on the volume by default. Falls back to the copy baked
+  next to `server.py`, then to the built-in defaults. The startup log prints which
+  file is in effect.
 
 ### The store
 
