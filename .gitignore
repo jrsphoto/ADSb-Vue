@@ -11,3 +11,5 @@ cities.local.json
 *.db
 *.db-wal
 *.db-shm
+# the recommended bind-mount location (./data:/data) inside the repo folder
+data/

@@ -78,10 +78,12 @@ services:
     environment:
       - ADSB_DATA_DIR=/data
     volumes:
-      - adsbvue-data:/data
-volumes:
-  adsbvue-data:
+      - ./data:/data
 ```
+
+The recommended mount is a `./data` bind inside the repo folder (git-ignored), so
+the container's persistent state sits next to its compose file — one folder to
+find, back up, or wipe. A named volume works identically if you prefer.
 
 ## Notes / trade-offs
 

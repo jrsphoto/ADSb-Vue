@@ -206,10 +206,7 @@ By default the viewer shows the feeder's rolling history (~a day) and resets on
 container recreation. Set **`ADSB_DATA_DIR`** to a mapped volume and coverage
 **accumulates there** across restarts, so you can build a weeks/months-long
 envelope and the timeline sweeps the whole period. It's optional and off unless
-you set it. Your `cities.local.json` also lives on that volume: on first run the
-app seeds it there from your existing copy, and from then on it's **live-editable**
-— edit it on the volume and reload, no rebuild. See
-[docs/persistence.md](docs/persistence.md) for the design.
+you set it.
 
 ```yaml
 services:
@@ -218,10 +215,22 @@ services:
     environment:
       - ADSB_DATA_DIR=/data
     volumes:
-      - adsbvue-data:/data
-volumes:
-  adsbvue-data:
+      - ./data:/data
 ```
+
+The `./data:/data` bind mount keeps everything the container accumulates in a
+`data/` folder **inside this repo folder** (e.g. `/opt/adsbvue/data`) — the same
+place you manage the container from, easy to find and back up. It's git-ignored,
+so `git pull` never touches it.
+
+**Why `cities.local.json` lives in `data/` too:** everything in the app folder is
+replaced by updates (`git pull` + rebuild), and everything baked into the image
+dies with the container. The `data/` volume is the one place that survives both —
+so that's where *your* stuff belongs: the accumulated coverage **and** your city
+labels. On first run the app seeds `data/cities.local.json` from your existing
+copy; from then on you edit it there and just reload the page — **no rebuild
+needed**, and it survives every update and container recreation. See
+[docs/persistence.md](docs/persistence.md) for the design.
 
 ## Endpoints
 
