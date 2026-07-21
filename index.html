@@ -661,7 +661,9 @@ function initScene(data) {
   document.getElementById('canvas').appendChild(renderer.domElement);
 
   scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x06090f, 0.0012);
+  // Distance fade; ADSB_FOG_DENSITY=0 disables it (nothing dims as you zoom out).
+  const fogD = data.fog_density != null ? data.fog_density : 0.0012;
+  if (fogD > 0) scene.fog = new THREE.FogExp2(0x06090f, fogD);
 
   // High ambient keeps colours vivid in the glassy/transparent look; a soft
   // directional light gives the surfaces shape once the Solidity slider is up.
@@ -1212,6 +1214,19 @@ const DEFAULT_CITIES = [
   ['Milwaukee', 43.04, -87.91],
 ];
 
+// cities.local.json may be a flat [["City",lat,lon],...] list OR a grouped
+// { "Group": [["City",lat,lon],...], ... } object (group keys — e.g. state names —
+// are just for keeping a big file tidy; they're flattened for display). Accept
+// either, and keep only well-formed [name, lat, lon] rows.
+function flattenCities(j) {
+  const rows = Array.isArray(j) ? j
+             : (j && typeof j === 'object') ? Object.values(j).flat() : [];
+  return rows
+    .filter(c => Array.isArray(c) && c.length >= 3 && typeof c[0] === 'string'
+              && Number.isFinite(+c[1]) && Number.isFinite(+c[2]))
+    .map(c => [c[0], +c[1], +c[2]]);
+}
+
 function makeGeoToXZ(data) {
   const RLAT = data.recv_lat, RLON = data.recv_lon, RADL = RLAT * DEG;
   return (lon, lat) => new THREE.Vector3((lat - RLAT) * 60, 0, (lon - RLON) * Math.cos(RADL) * 60);
@@ -1276,10 +1291,12 @@ async function loadStateMap(data) {
     const tj = await resp.json();
     const states = topo.feature(tj, tj.objects.states);
     const homeSet = homeStateIds(states.features, RLON, RLAT);
+    const borderCol = new THREE.Color(data.border_color || '#3f82b8');
+    const homeBorderCol = new THREE.Color(data.home_border_color || '#6fd6c0');
     for (const feat of states.features) {
       const home = homeSet.has(String(feat.id));
       const mat = new THREE.LineBasicMaterial({
-        color: home ? 0x6fd6c0 : 0x3f82b8, transparent: true, opacity: home ? 0.95 : 0.7 });
+        color: home ? homeBorderCol : borderCol, transparent: true, opacity: home ? 0.95 : 0.7 });
       for (const ring of ringsOf(feat.geometry)) {
         if (ring.length < 2) continue;
         const geo = new THREE.BufferGeometry().setFromPoints(ring.map(([lon,lat]) => geoToXZ(lon,lat)));
@@ -1309,7 +1326,7 @@ async function loadStateMap(data) {
   let cities = DEFAULT_CITIES;
   try {
     const r = await fetch('/cities');
-    if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) cities = j; }
+    if (r.ok) { const flat = flattenCities(await r.json()); if (flat.length) cities = flat; }
   } catch (e) { /* offline / no override — keep the defaults */ }
   const dotGeo = new THREE.SphereGeometry(1.4, 8, 8);
   const dotMat = new THREE.MeshBasicMaterial({ color: 0xbfe4ff });

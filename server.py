@@ -26,6 +26,9 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_LOW_ALT_FT    "low altitude" threshold for the cone stat, ft (default 10000)
   ADSB_FETCH_WORKERS parallel chunk downloads (default 8; 1 = serial)
   ADSB_ANTENNA_AGL_FT antenna height above ground, ft (default 30; terrain LOS model)
+  ADSB_BORDER_COLOR  state border colour, hex (default #3f82b8)
+  ADSB_HOME_BORDER_COLOR  home-state border colour, hex (default #6fd6c0)
+  ADSB_FOG_DENSITY   distance-fade density (default 0.0012; 0 disables it)
 """
 
 import gzip
@@ -83,6 +86,10 @@ FETCH_WORKERS = int(os.environ.get("ADSB_FETCH_WORKERS", "8"))   # parallel chun
 ANTENNA_AGL_FT = float(os.environ.get("ADSB_ANTENNA_AGL_FT", "30"))  # antenna height above ground
                                                                  # (mast); feeds the terrain
                                                                  # line-of-sight horizon model
+# --- appearance (passed through to the page) ---
+BORDER_COLOR = os.environ.get("ADSB_BORDER_COLOR", "#3f82b8")        # state borders
+HOME_BORDER_COLOR = os.environ.get("ADSB_HOME_BORDER_COLOR", "#6fd6c0")  # home state(s), highlighted
+FOG_DENSITY = float(os.environ.get("ADSB_FOG_DENSITY", "0.0012"))   # distance fade; 0 disables it
 
 # --- fixed constants (named, not config — changing these would be wrong/noise) ---
 NM_PER_DEG = 60.0            # nautical miles per degree of latitude
@@ -237,6 +244,9 @@ def build_points():
         "recv_lat": rlat,
         "recv_lon": rlon,
         "antenna_agl_ft": ANTENNA_AGL_FT,   # mast height for the terrain LOS model
+        "border_color": BORDER_COLOR,       # appearance (client uses these)
+        "home_border_color": HOME_BORDER_COLOR,
+        "fog_density": FOG_DENSITY,
         "count": len(points),
         "chunks": n_chunks,
         "t_min": t_min,          # earliest / latest first-seen time in the window

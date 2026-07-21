@@ -75,6 +75,9 @@ environment variables:
 | `ADSB_FETCH_WORKERS`| `8`                 | Parallel chunk downloads (1 = serial; higher helps a remote feeder) |
 | `ADSB_CACHE_SECS`  | `120`                | Seconds to cache parsed observations      |
 | `ADSB_ANTENNA_AGL_FT`| `30`               | Antenna height above ground (ft) for the terrain horizon model |
+| `ADSB_BORDER_COLOR`| `#3f82b8`            | State border colour (hex)                 |
+| `ADSB_HOME_BORDER_COLOR`| `#6fd6c0`       | Home-state border colour (hex)            |
+| `ADSB_FOG_DENSITY` | `0.0012`             | Distance-fade density; `0` disables the fade |
 
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.
 Raise `ADSB_MAX_CHUNKS` (e.g. `0`) for the fullest envelope at the cost of a
@@ -146,6 +149,18 @@ The server serves it at `/cities`; only entries within range of the receiver are
 drawn. If the file is absent, the built-in defaults are used. Under Docker, create
 `cities.local.json` in the repo folder *before* `docker compose up --build` — the
 Dockerfile copies it into the image at build time (rebuild after editing it).
+
+If your coverage spans several states, you can **group** the list to keep a long
+file tidy — the group names are just for you (they're flattened for display):
+
+```json
+{
+  "Minnesota": [ ["Minneapolis", 44.98, -93.27], ["Duluth", 46.78, -92.11] ],
+  "Wisconsin": [ ["Madison", 43.07, -89.40], ["Green Bay", 44.51, -88.01] ]
+}
+```
+
+Both the flat array and this grouped object are accepted.
 
 ## Terrain — predicted vs. measured coverage
 

@@ -64,7 +64,9 @@ Config splits into two intentional categories in the source:
 - **Tunables** exposed as env vars: `ULTRAFEEDER`, `PORT`, `CACHE_SECS`,
   `MAX_CHUNKS`, `CELL_NM`, `ALT_BIN_FT`, `MAX_RANGE_NM`, `LOW_ALT_FT`,
   `FETCH_WORKERS`, `ANTENNA_AGL_FT` (antenna mast height, ft — used only by the
-  client's terrain model, passed through the payload).
+  client's terrain model, passed through the payload), and the appearance
+  passthroughs `BORDER_COLOR` / `HOME_BORDER_COLOR` / `FOG_DENSITY` (`0` disables
+  the distance fade).
 - **Fixed constants** that are named but *not* configurable, because changing
   them would be wrong or meaningless: `BEARING_BINS = 361` (0–360° inclusive),
   `GZIP_MIN_BYTES = 1400` (~one MTU), `NM_PER_DEG`, `FT_PER_NM`.
@@ -111,9 +113,11 @@ collaborators:
   costs nothing meaningful (~300 k iterations).
 
 The returned dict: `{ ok, ts, ultrafeeder, recv_lat, recv_lon, antenna_agl_ft,
-count, chunks, t_min, t_max, points: [[brg, dist_nm, alt_ft, first_seen_epoch], ...],
-cone_all, cone_low }`. (`antenna_agl_ft` is a passthrough of the config for the
-client's terrain model; it isn't used server-side.)
+border_color, home_border_color, fog_density, count, chunks, t_min, t_max,
+points: [[brg, dist_nm, alt_ft, first_seen_epoch], ...], cone_all, cone_low }`.
+The last handful (`antenna_agl_ft`, `border_color`, `home_border_color`,
+`fog_density`) are pure config passthroughs the client reads for the terrain model
+and appearance; the server doesn't use them itself.
 
 ### Caching & concurrency
 
@@ -253,7 +257,11 @@ point-in-polygon of the receiver against the state shapes (plus any border withi
 Natural Earth lakes within range and a labelled city list: the built-in
 `DEFAULT_CITIES`, overridden by whatever `GET /cities` returns (a git-ignored
 `cities.local.json`), so a deployment keeps its own labels across updates without
-editing the tracked page. Labels beyond ~500 nm are culled.
+editing the tracked page. `flattenCities()` accepts either a flat
+`[["City",lat,lon],...]` list or a grouped `{ "Group": [...], ... }` object (group
+keys are for tidiness only — flattened for display) and drops malformed rows.
+Border colours come from `border_color` / `home_border_color`; labels beyond
+~500 nm are culled.
 
 ### Terrain — the predicted-horizon model
 
