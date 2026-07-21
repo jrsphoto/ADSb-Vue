@@ -30,6 +30,22 @@ Altitude-band checkboxes filter all three modes. The vertical axis is
 exaggerated ~2× (45 kft ≈ 180 units vs 250 nm ≈ 250 units) so the naturally thin
 altitude band reads as a dome rather than a pancake.
 
+## Timeline — coverage over time
+
+The **Timeline** panel replays how your coverage built up over the retained
+history window. Drag the scrubber to reveal only what was first heard up to a
+given moment, or press ▶ to sweep the whole window — all three render modes
+animate the coverage filling in. **Loop** repeats the sweep and the **speed**
+button (0.5–4×) sets how fast it runs.
+
+**⏺ Export** records a play-through to a WebM file for sharing. The clip has a
+burned-in **date/time** stamp of the moment each frame represents, a progress bar,
+and a slow camera orbit while recording. (Recording needs a Chromium- or
+Firefox-based browser.)
+
+How far back the window reaches is set by `ADSB_MAX_CHUNKS` — bigger is more
+history (`0` = everything the feeder retains).
+
 ## Run
 
     python3 server.py

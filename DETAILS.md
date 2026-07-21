@@ -63,7 +63,8 @@ Config splits into two intentional categories in the source:
 
 - **Tunables** exposed as env vars: `ULTRAFEEDER`, `PORT`, `CACHE_SECS`,
   `MAX_CHUNKS`, `CELL_NM`, `ALT_BIN_FT`, `MAX_RANGE_NM`, `LOW_ALT_FT`,
-  `FETCH_WORKERS`.
+  `FETCH_WORKERS`, `ANTENNA_AGL_FT` (antenna mast height, ft — used only by the
+  client's terrain model, passed through the payload).
 - **Fixed constants** that are named but *not* configurable, because changing
   them would be wrong or meaningless: `BEARING_BINS = 361` (0–360° inclusive),
   `GZIP_MIN_BYTES = 1400` (~one MTU), `NM_PER_DEG`, `FT_PER_NM`.
@@ -91,7 +92,11 @@ collaborators:
   small: we're building a *coverage map*, not replaying traffic, so ~1.5 nm × 1000 ft
   cells collapse millions of raw positions to a few hundred thousand distinct
   ones regardless of how much history we read. The `seen`-check happens **before**
-  the trig, so ~90 % of rows cost nothing but a set lookup.
+  the trig, so ~90 % of rows cost nothing but a set lookup. Each kept point also
+  carries the **earliest time its cell was heard** (`t`, epoch seconds); `seen`
+  maps a cell to its point index so a later, earlier sighting can lower it. That
+  `t` is what drives the client's timeline (see *Timeline playback* below), and
+  the window's `min`/`max` become `t_min`/`t_max` in the payload.
 
 - **`bearing_distance(sin1, cos1, rlat_r, rlon_r, alat, alon)`** — initial great-
   circle bearing (0°=N) and haversine distance in nm. The receiver terms
@@ -105,8 +110,10 @@ collaborators:
   statistic, so keeping it out of the hot de-dup loop reads more clearly and
   costs nothing meaningful (~300 k iterations).
 
-The returned dict: `{ ok, ts, ultrafeeder, recv_lat, recv_lon, count, chunks,
-points: [[brg, dist_nm, alt_ft], ...], cone_all, cone_low }`.
+The returned dict: `{ ok, ts, ultrafeeder, recv_lat, recv_lon, antenna_agl_ft,
+count, chunks, t_min, t_max, points: [[brg, dist_nm, alt_ft, first_seen_epoch], ...],
+cone_all, cone_low }`. (`antenna_agl_ft` is a passthrough of the config for the
+client's terrain model; it isn't used server-side.)
 
 ### Caching & concurrency
 
@@ -138,6 +145,7 @@ the client accepts it and the body exceeds `GZIP_MIN_BYTES`.
 |---|---|
 | `GET /` (`/view`, `/index.html`) | the viewer page |
 | `GET /cone` (`/data`) | the observation payload (`?refresh=true` bypasses cache) |
+| `GET /cities` | optional per-deployment city labels: `cities.local.json` if present next to `server.py`, else `[]` (never 404 → no console noise; invalid JSON → `[]`) |
 | `GET /health` | liveness |
 | `GET /adsbvue_favicon.png`, `/favicon.ico`, `/adsbvue_logo.png` | static assets |
 | `POST /_save?name=…` | debug-only: writes a posted canvas data-URL to `/tmp` (used for headless screenshot verification; harmless, unused by the app) |
@@ -195,6 +203,36 @@ three, all driven from the same point stream:
 `altColor(alt)` is the shared HSL ramp (hue sweeps ~28°→296° with altitude). An
 ambient + directional light pair lets the Lambert surfaces shade when solid.
 
+### Timeline playback
+
+The Timeline panel animates coverage building up over the retained window using
+each point's first-seen time (`t`). Scrubbing (paused) just re-filters
+`activePoints()` by a cutoff and rebuilds once. **Playing** can't afford a rebuild
+per frame, so it swaps in a per-mode *reveal* object that moves the cutoff every
+frame with O(1) work, so the sweep stays at 60 fps:
+
+- **points** — one geometry with vertices sorted by `t`; the cutoff is a
+  `geometry.setDrawRange(0, k)` (binary-searched `k`). Stock material, identical look.
+- **voxel** — one `InstancedMesh` with cells ordered by first-seen time; the
+  cutoff is just `mesh.count = k`.
+- **cone** — the floor surface genuinely reshapes as points are added, so there's
+  no cheap threshold: it **precomputes ~60 frames** once on play (yielding to keep
+  the UI responsive) and swaps the visible one by index.
+
+Pausing/scrubbing snaps back to the accurate single-geometry static path. Loop and
+a 0.5–4× speed control drive the rAF sweep.
+
+### Exporting a clip
+
+`exportClip()` records a play-through to WebM by **compositing**: an offscreen 2D
+canvas draws the WebGL canvas (created `preserveDrawingBuffer: true`) plus a
+burned-in overlay — the date/time of the current `playCut`, a window progress bar,
+and a small wordmark — then `canvas.captureStream(30)` feeds a `MediaRecorder`
+(vp9 → vp8 → webm). A gentle `controls.autoRotate` runs during capture, and a
+wall-clock cap guarantees the recorder can't hang if the tab is backgrounded
+mid-sweep. Feature-detected; the button disables where `MediaRecorder` /
+`captureStream` are unavailable.
+
 ### Interaction & lifecycle
 
 - **Mode** buttons and **altitude-band** checkboxes trigger `rebuild()`.
@@ -212,14 +250,43 @@ ambient + directional light pair lets the Lambert surfaces shade when solid.
 `loadStateMap()` draws state borders, auto-highlighting the **home state(s)** by
 point-in-polygon of the receiver against the state shapes (plus any border within
 ~35 nm), so it's correct at any deployment with no hardcoded list. It also draws
-Natural Earth lakes within range and a short editable `CITIES` list.
+Natural Earth lakes within range and a labelled city list: the built-in
+`DEFAULT_CITIES`, overridden by whatever `GET /cities` returns (a git-ignored
+`cities.local.json`), so a deployment keeps its own labels across updates without
+editing the tracked page. Labels beyond ~500 nm are culled.
+
+### Terrain — the predicted-horizon model
+
+Optional, entirely client-side (keeps the server dependency-free) and degrades to
+nothing if the tiles are unreachable. On demand it fetches open **Terrarium**
+elevation tiles (AWS Open Data, `.../terrarium/{z}/{x}/{y}.png`, zoom 8 ≈ 430 m/px)
+covering the receiver's disc, decodes elevation `= (R·256 + G + B/256) − 32768` m
+into per-tile `Float32Array`s, and caches them.
+
+`computePredictedFloor()` walks each of 120 bearings outward sampling the ground,
+tracking the steepest grazing angle over terrain **and the earth's bulge**
+(4/3-effective-earth radius), and reports the lowest altitude still in line of
+sight at each range — the physical horizon the antenna is limited by. Antenna
+height above sea level = the DEM elevation at the receiver + `antenna_agl_ft`.
+
+- **▲ Predicted horizon** (`buildHorizon`) renders that floor as a translucent surface.
+- **◑ Compare to horizon** recolours the measured cone by `measured − predicted`:
+  green = matches, amber = higher than terrain allows, blue = below the horizon,
+  grey = judged only where low traffic actually flew (`measured < COMPARE_CEIL_FT`);
+  a small dead-zone treats near-matches as green.
+- **⌇ Bearing profile** draws a side-on SVG slice for one bearing (picked by
+  slider or a ground-plane raycast on click): terrain, the horizon line, and the
+  actual hits — disambiguating an amber patch (hits on the line = good coverage;
+  an empty low region = no low traffic, not a gap).
 
 ### Debugging hook
 
-`window.__adsb` exposes `setMode/freeze/resume/stats`, and the renderer is created
-with `preserveDrawingBuffer: true`, so the render can be captured headlessly
-(freeze the rAF loop, `canvas.toDataURL()`, POST to `/_save`). Handy because the
-usual screenshot tooling struggles with a continuously-animating WebGL canvas.
+`window.__adsb` exposes `setMode/freeze/resume/stats` plus headless-test helpers
+for the timeline (`seek/play/stop`), terrain (`terrain/terrainInfo/floorAt/elevFt`)
+and export (`exportFrame`). The renderer is created with
+`preserveDrawingBuffer: true`, so the render can be captured headlessly (freeze the
+rAF loop, `canvas.toDataURL()`, POST to `/_save`). Handy because the usual
+screenshot tooling struggles with a continuously-animating WebGL canvas.
 
 ---
 
