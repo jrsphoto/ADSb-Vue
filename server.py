@@ -30,12 +30,16 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_BORDER_COLOR  state border colour, hex (default #3f82b8)
   ADSB_HOME_BORDER_COLOR  home-state border colour, hex (default #6fd6c0)
   ADSB_FOG_DENSITY   distance-fade density (default 0.0012; 0 disables it)
+  ADSB_DATA_DIR      persistence volume: if set, coverage accumulates in
+                     <dir>/adsbvue.db across restarts, and cities.local.json is
+                     read from <dir> first. Unset = no persistence (default).
 """
 
 import gzip
 import json
 import math
 import os
+import sqlite3
 import sys
 import threading
 import time
@@ -94,6 +98,11 @@ ANTENNA_AGL_FT = float(os.environ.get("ADSB_ANTENNA_AGL_FT", "30"))  # antenna h
 BORDER_COLOR = os.environ.get("ADSB_BORDER_COLOR", "#3f82b8")        # state borders
 HOME_BORDER_COLOR = os.environ.get("ADSB_HOME_BORDER_COLOR", "#6fd6c0")  # home state(s), highlighted
 FOG_DENSITY = float(os.environ.get("ADSB_FOG_DENSITY", "0.0012"))   # distance fade; 0 disables it
+# --- persistence (optional) ---
+DATA_DIR = os.environ.get("ADSB_DATA_DIR", "").strip()   # volume dir; unset = no store
+STORE_PATH = os.path.join(DATA_DIR, "adsbvue.db") if DATA_DIR else None
+if DATA_DIR:
+    os.makedirs(DATA_DIR, exist_ok=True)
 
 # --- fixed constants (named, not config — changing these would be wrong/noise) ---
 NM_PER_DEG = 60.0            # nautical miles per degree of latitude
@@ -101,8 +110,9 @@ FT_PER_NM = 6076.12         # feet per nautical mile
 STEP = CELL_NM / NM_PER_DEG  # de-dup grid step in degrees
 BEARING_BINS = 361          # one slot per integer bearing, 0..360 inclusive
 GZIP_MIN_BYTES = 1400       # ~one MTU; not worth the CPU to compress smaller replies
-# Field layout of each kept point (and how the client reads them back).
-BRG, DIST, ALT, FIRST_SEEN = 0, 1, 2, 3
+# Field layout of a kept point. The client sees the first four; LAST_SEEN is an
+# internal accumulator (used to merge/retain in the persistent store).
+BRG, DIST, ALT, FIRST_SEEN, LAST_SEEN = 0, 1, 2, 3, 4
 
 _recv = {"lat": None, "lon": None}
 # data = parsed dict; json/gz = payload serialized once per rebuild (see _ensure)
@@ -197,10 +207,59 @@ def build_cones(points):
     return [round(v, 1) for v in cone_all], [round(v, 1) for v in cone_low]
 
 
+def cities_file():
+    """Path to the cities.local.json actually in effect: the one on the data
+    volume wins (edit it live), then the one baked next to server.py, else None."""
+    if DATA_DIR:
+        p = os.path.join(DATA_DIR, "cities.local.json")
+        if os.path.exists(p):
+            return p
+    p = os.path.join(HERE, "cities.local.json")
+    return p if os.path.exists(p) else None
+
+
+def _store_conn():
+    con = sqlite3.connect(STORE_PATH)
+    con.execute("PRAGMA journal_mode=WAL")   # crash-safe, no full-file rewrites
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS cells("
+        "klat INTEGER, klon INTEGER, kalt INTEGER,"          # grid-cell key
+        "brg REAL, dist REAL, alt INTEGER,"                  # the point we serve
+        "first_seen INTEGER, last_seen INTEGER,"             # accumulate / retain
+        "PRIMARY KEY(klat, klon, kalt))")
+    return con
+
+
+def _store_merge(cells):
+    """Upsert this window's cells into the persistent store (keep earliest
+    first_seen, latest last_seen) and return the whole accumulated coverage as
+    [brg, dist, alt, first_seen] points plus the first-seen span."""
+    con = _store_conn()
+    try:
+        with con:   # one transaction
+            con.executemany(
+                "INSERT INTO cells(klat,klon,kalt,brg,dist,alt,first_seen,last_seen) "
+                "VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(klat,klon,kalt) DO UPDATE SET "
+                "first_seen=min(first_seen, excluded.first_seen), "
+                "last_seen=max(last_seen, excluded.last_seen)",
+                [(k[0], k[1], k[2], r[BRG], r[DIST], r[ALT], r[FIRST_SEEN], r[LAST_SEEN])
+                 for k, r in cells.items()])
+        points = [[b, d, a, fs] for (b, d, a, fs)
+                  in con.execute("SELECT brg,dist,alt,first_seen FROM cells")]
+        lo, hi = con.execute(
+            "SELECT min(first_seen), max(first_seen) FROM cells WHERE first_seen>0").fetchone()
+    finally:
+        con.close()
+    return points, lo or 0, hi or 0
+
+
 def build_points():
     """Read recent-history chunks and return the cone payload: de-duplicated
     observations as [bearing, distance_nm, altitude_ft, first_seen_epoch], plus
-    per-bearing reach."""
+    per-bearing reach. With ADSB_DATA_DIR set, coverage is merged into a
+    persistent store and the payload is the whole accumulated set, not just this
+    read window."""
     rlat, rlon = receiver()
     # Receiver terms are constant for the whole run — compute once, not per row.
     rlat_r, rlon_r = math.radians(rlat), math.radians(rlon)
@@ -210,14 +269,13 @@ def build_points():
     if MAX_CHUNKS > 0:
         names = names[-MAX_CHUNKS:]
 
-    points = []
-    seen = {}         # grid-cell coords (not raw lat/lon) -> index into points
+    cells = {}        # grid-cell coords -> [brg, dist, alt, first_seen, last_seen]
     n_chunks = 0
     # Single pass over every observation: de-duplicate onto a coarse grid (this is
     # a coverage map, not a traffic replay) and convert each kept hit to
-    # receiver-relative polar coordinates. Each kept point also carries the
-    # earliest time its cell was heard (t, epoch seconds) so the client can
-    # animate coverage building up over the retained window.
+    # receiver-relative polar coordinates. Each cell tracks the earliest and latest
+    # time it was heard — first_seen drives the timeline; last_seen is used to
+    # merge/retain in the persistent store.
     for doc in iter_chunks(names):
         n_chunks += 1
         for f in doc.get("files", []):
@@ -232,20 +290,26 @@ def build_points():
                 # Grid-cell coordinates, not raw lat/lon: lat/lon rounded to STEP-sized
                 # cells and altitude bucketed into ALT_BIN_FT bins.
                 key = (round(lat / STEP), round(lon / STEP), int(alt // ALT_BIN_FT))
-                idx = seen.get(key)
-                if idx is not None:                 # already have this cell —
-                    if now_i and now_i < points[idx][FIRST_SEEN]:
-                        points[idx][FIRST_SEEN] = now_i   # keep the earliest sighting
+                rec = cells.get(key)
+                if rec is not None:                 # already have this cell —
+                    if now_i:
+                        if now_i < rec[FIRST_SEEN]:
+                            rec[FIRST_SEEN] = now_i
+                        if now_i > rec[LAST_SEEN]:
+                            rec[LAST_SEEN] = now_i
                     continue
                 brg, dist = bearing_distance(sin1, cos1, rlat_r, rlon_r, lat, lon)
                 if dist > MAX_RANGE_NM:   # discard obvious bad positions
                     continue
-                seen[key] = len(points)
-                points.append([round(brg, 1), round(dist, 2), int(alt), now_i])
+                cells[key] = [round(brg, 1), round(dist, 2), int(alt), now_i, now_i]
 
-    times = [p[FIRST_SEEN] for p in points if p[FIRST_SEEN]]
-    t_min = min(times) if times else 0
-    t_max = max(times) if times else 0
+    if STORE_PATH:
+        points, t_min, t_max = _store_merge(cells)
+    else:
+        points = [[r[BRG], r[DIST], r[ALT], r[FIRST_SEEN]] for r in cells.values()]
+        times = [r[FIRST_SEEN] for r in cells.values() if r[FIRST_SEEN]]
+        t_min = min(times) if times else 0
+        t_max = max(times) if times else 0
     cone_all, cone_low = build_cones(points)
     return {
         "ok": True,
@@ -349,13 +413,15 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, snap["json"], "application/json", gz_ok=False)
             elif path == "/cities":
                 # Optional per-deployment city labels. A git-ignored
-                # cities.local.json next to server.py overrides the page's
-                # built-in list, so a site's own cities survive every update.
-                # Absent (the common case) -> an empty array, never a 404, so a
-                # fresh install stays quiet in the console.
-                fp = os.path.join(HERE, "cities.local.json")
+                # cities.local.json (on the data volume if ADSB_DATA_DIR is set,
+                # else next to server.py) overrides the page's built-in list, so a
+                # site's own cities survive every update. Read fresh each request,
+                # so editing it takes effect on the next page load. Absent (the
+                # common case) -> an empty array, never a 404, so a fresh install
+                # stays quiet in the console.
+                fp = cities_file()
                 body = b"[]"
-                if os.path.exists(fp):
+                if fp:
                     try:
                         with open(fp, "rb") as fh:
                             data = fh.read()
@@ -400,6 +466,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     print("ADSb-Vue  ultrafeeder=%s  port=%d" % (ULTRAFEEDER, PORT))
+    if STORE_PATH:
+        print("persistence: accumulating coverage in %s" % STORE_PATH)
     try:
         rlat, rlon = receiver()
         print("receiver: %.6f, %.6f" % (rlat, rlon))

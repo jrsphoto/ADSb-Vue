@@ -6,3 +6,8 @@ __pycache__/
 
 # per-deployment city labels — commit cities.local.json.example, not your real one
 cities.local.json
+
+# persistence store (lives on a mapped volume; never in the repo)
+*.db
+*.db-wal
+*.db-shm

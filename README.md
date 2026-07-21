@@ -78,6 +78,7 @@ environment variables:
 | `ADSB_BORDER_COLOR`| `#3f82b8`            | State border colour (hex)                 |
 | `ADSB_HOME_BORDER_COLOR`| `#6fd6c0`       | Home-state border colour (hex)            |
 | `ADSB_FOG_DENSITY` | `0.0012`             | Distance-fade density; `0` disables the fade |
+| `ADSB_DATA_DIR`    | *(unset)*            | Volume dir for long-term persistence (see below). Unset = no store. |
 
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.
 Raise `ADSB_MAX_CHUNKS` (e.g. `0`) for the fullest envelope at the cost of a
@@ -197,6 +198,28 @@ Two things to keep in mind when reading it:
   to open a **bearing profile** (terrain, horizon, and the actual hits along that
   bearing) to tell the two apart; green usually traces your busy arrival/departure
   corridors.
+
+## Long-term coverage (persistence)
+
+By default the viewer shows the feeder's rolling history (~a day) and resets on
+container recreation. Set **`ADSB_DATA_DIR`** to a mapped volume and coverage
+**accumulates there** across restarts, so you can build a weeks/months-long
+envelope and the timeline sweeps the whole period. It's optional and off unless
+you set it. That directory also holds a **live-editable** `cities.local.json`
+(edit it on the volume, no rebuild needed). See
+[docs/persistence.md](docs/persistence.md) for the design.
+
+```yaml
+services:
+  adsbvue:
+    # ...
+    environment:
+      - ADSB_DATA_DIR=/data
+    volumes:
+      - adsbvue-data:/data
+volumes:
+  adsbvue-data:
+```
 
 ## Endpoints
 
