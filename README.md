@@ -44,7 +44,9 @@ and a slow camera orbit while recording. (Recording needs a Chromium- or
 Firefox-based browser.)
 
 How far back the window reaches is set by `ADSB_MAX_CHUNKS` — bigger is more
-history (`0` = everything the feeder retains).
+history (`0` = everything the feeder retains). With **persistence** enabled
+(`ADSB_DATA_DIR`, see below), the timeline instead spans the whole accumulated
+store — up to `ADSB_RETAIN_DAYS` of coverage.
 
 ## Run
 
@@ -141,16 +143,19 @@ State borders and lakes are drawn automatically and the home state(s) are
 highlighted based on your receiver's position — no editing needed.
 
 The labelled **cities** default to a short upper-Midwest US example. To use your
-own, copy the example to a git-ignored local file and edit that — it overrides the
-built-in list and **survives every update**, so you never touch a tracked file:
-
-    cp cities.local.json.example cities.local.json
-    # edit cities.local.json — a JSON array of [ "label", lat, lon ] entries
-
+own, put a git-ignored `cities.local.json` where the app can see it (a JSON array
+of `[ "label", lat, lon ]` entries — start from `cities.local.json.example`).
 The server serves it at `/cities`; only entries within range of the receiver are
-drawn. If the file is absent, the built-in defaults are used. Under Docker, create
-`cities.local.json` in the repo folder *before* `docker compose up --build` — the
-Dockerfile copies it into the image at build time (rebuild after editing it).
+drawn; absent, the built-in defaults are used. Where it lives depends on how you
+run:
+
+- **With a `data/` volume (recommended — required for the prebuilt image):** the
+  file lives at `data/cities.local.json`. Edit it and reload the page — no
+  rebuild, and it survives updates and container recreation. See the persistence
+  section below.
+- **Building from source without a volume:** put it next to `server.py` before
+  `docker compose up --build` (the Dockerfile bakes it into the image; rebuild
+  after editing). Running plain `python3 server.py` reads it directly.
 
 If your coverage spans several states, you can **group** the list to keep a long
 file tidy — the group names are just for you (they're flattened for display):
