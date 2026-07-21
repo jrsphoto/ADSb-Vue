@@ -33,6 +33,8 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_DATA_DIR      persistence volume: if set, coverage accumulates in
                      <dir>/adsbvue.db across restarts, and cities.local.json is
                      read from <dir> first. Unset = no persistence (default).
+  ADSB_RETAIN_DAYS   store retention: drop cells not heard within N days
+                     (default 30; 0 = keep everything)
 """
 
 import gzip
@@ -101,6 +103,8 @@ FOG_DENSITY = float(os.environ.get("ADSB_FOG_DENSITY", "0.0012"))   # distance f
 # --- persistence (optional) ---
 DATA_DIR = os.environ.get("ADSB_DATA_DIR", "").strip()   # volume dir; unset = no store
 STORE_PATH = os.path.join(DATA_DIR, "adsbvue.db") if DATA_DIR else None
+RETAIN_DAYS = int(os.environ.get("ADSB_RETAIN_DAYS", "30"))  # store: drop cells not
+                                                            # heard within N days (0 = keep all)
 if DATA_DIR:
     os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -245,6 +249,9 @@ def _store_merge(cells):
                 "last_seen=max(last_seen, excluded.last_seen)",
                 [(k[0], k[1], k[2], r[BRG], r[DIST], r[ALT], r[FIRST_SEEN], r[LAST_SEEN])
                  for k, r in cells.items()])
+            if RETAIN_DAYS > 0:   # rolling window: drop cells not heard recently
+                cutoff = int(time.time()) - RETAIN_DAYS * 86400
+                con.execute("DELETE FROM cells WHERE last_seen < ?", (cutoff,))
         points = [[b, d, a, fs] for (b, d, a, fs)
                   in con.execute("SELECT brg,dist,alt,first_seen FROM cells")]
         lo, hi = con.execute(

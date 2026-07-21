@@ -1,6 +1,6 @@
 # Persistence — long-term coverage accumulation
 
-*Status: M1 implemented (the store). M2 (retention) next. Optional; off by default.*
+*Status: implemented (store + retention). Optional; off by default.*
 
 ## Why
 
@@ -52,19 +52,19 @@ DB writes cheap (one transaction of ~100k rows per rebuild).
 Automatic — the `.db` file is simply present on the volume, so a restart picks up
 with everything it had.
 
-### Retention (M2)
+### Retention
 
-`ADSB_RETAIN_DAYS` (default 30): each rebuild deletes cells whose `last_seen` is
-older than the cutoff — a rolling "last N days of coverage". Because a coverage
-map saturates (you eventually hear planes almost everywhere you can), the store
-plateaus rather than growing without bound.
+`ADSB_RETAIN_DAYS` (default 30, `0` = keep everything): each rebuild deletes cells
+whose `last_seen` is older than the cutoff — a rolling "last N days of coverage".
+Because a coverage map saturates (you eventually hear planes almost everywhere you
+can), the store plateaus rather than growing without bound.
 
 ## Config
 
 | Var | Default | Meaning |
 |---|---|---|
 | `ADSB_DATA_DIR` | *(unset)* | Volume dir. Set = persistence on (`<dir>/adsbvue.db`) + live cities from `<dir>`. |
-| `ADSB_RETAIN_DAYS` | `30` | Drop cells not heard within this many days *(M2)*. |
+| `ADSB_RETAIN_DAYS` | `30` | Drop cells not heard within this many days (`0` = keep all). |
 
 ### Docker
 

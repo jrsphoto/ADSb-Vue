@@ -79,6 +79,7 @@ environment variables:
 | `ADSB_HOME_BORDER_COLOR`| `#6fd6c0`       | Home-state border colour (hex)            |
 | `ADSB_FOG_DENSITY` | `0.0012`             | Distance-fade density; `0` disables the fade |
 | `ADSB_DATA_DIR`    | *(unset)*            | Volume dir for long-term persistence (see below). Unset = no store. |
+| `ADSB_RETAIN_DAYS` | `30`                 | Store retention: drop cells not heard within N days (`0` = keep all) |
 
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.
 Raise `ADSB_MAX_CHUNKS` (e.g. `0`) for the fullest envelope at the cost of a
