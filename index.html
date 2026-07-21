@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ADSb-Vue — 3D Reception Volume</title>
-<link rel="icon" type="image/png" href="/adsbvue_favicon.png">
-<link rel="apple-touch-icon" href="/adsbvue_favicon.png">
+<link rel="icon" type="image/png" href="./adsbvue_favicon.png">
+<link rel="apple-touch-icon" href="./adsbvue_favicon.png">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: #06090f; overflow: hidden; font-family: 'SF Mono', Consolas, monospace; font-size: 12px; color: #7aaecc; }
@@ -165,7 +165,7 @@ input[type=range]::-moz-range-thumb {
 <button id="menuToggle" aria-label="Toggle controls">&#9776;</button>
 
 <div id="ui" style="display:none">
-  <div class="brand"><img src="/adsbvue_favicon.png" alt=""><h1>ADSb-Vue</h1></div>
+  <div class="brand"><img src="./adsbvue_favicon.png" alt=""><h1>ADSb-Vue</h1></div>
   <div id="meta"></div>
 
   <div class="sec">Render mode</div>
@@ -1189,7 +1189,7 @@ function wireUI() {
     if (recording || preparing) return;
     endPlaybackForEdit();
     btn.textContent = '⟳ Refreshing…'; btn.disabled = true;
-    fetch('/cone?refresh=true').then(r => r.json()).then(d => {
+    fetch('./cone?refresh=true').then(r => r.json()).then(d => {
       DATA = d; setupTimeline(d); rebuild(); updateMeta(d);
       document.getElementById('cacheInfo').textContent = 'Live — fetched ' + new Date().toLocaleTimeString();
       btn.textContent = '↻ Refresh data'; btn.disabled = false;
@@ -1325,7 +1325,7 @@ async function loadStateMap(data) {
   // the built-in list; absent, /cities returns [] and we keep the defaults.
   let cities = DEFAULT_CITIES;
   try {
-    const r = await fetch('/cities');
+    const r = await fetch('./cities');
     if (r.ok) { const flat = flattenCities(await r.json()); if (flat.length) cities = flat; }
   } catch (e) { /* offline / no override — keep the defaults */ }
   const dotGeo = new THREE.SphereGeometry(1.4, 8, 8);
@@ -1684,7 +1684,7 @@ function closeProfile() {
   if (profileRay) { scene.remove(profileRay); profileRay.geometry.dispose(); profileRay.material.dispose(); profileRay = null; }
 }
 
-fetch('/cone').then(r => r.json()).then(d => {
+fetch('./cone').then(r => r.json()).then(d => {
   if (!d.ok) throw new Error(d.error || 'no data');
   initScene(d);
 }).catch(e => {
