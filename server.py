@@ -97,6 +97,8 @@ FT_PER_NM = 6076.12         # feet per nautical mile
 STEP = CELL_NM / NM_PER_DEG  # de-dup grid step in degrees
 BEARING_BINS = 361          # one slot per integer bearing, 0..360 inclusive
 GZIP_MIN_BYTES = 1400       # ~one MTU; not worth the CPU to compress smaller replies
+# Field layout of each kept point (and how the client reads them back).
+BRG, DIST, ALT, FIRST_SEEN = 0, 1, 2, 3
 
 _recv = {"lat": None, "lon": None}
 # data = parsed dict; json/gz = payload serialized once per rebuild (see _ensure)
@@ -167,7 +169,8 @@ def iter_chunks(names):
     """Yield parsed history-chunk docs, downloaded/decompressed/parsed in parallel
     (network latency dominates a serial loop, especially for a remote feeder).
     Results stream in as they complete; failed chunks are logged and skipped."""
-    with ThreadPoolExecutor(max_workers=max(1, FETCH_WORKERS)) as ex:
+    # Never spin up more workers than there are chunks to fetch (>=1 for the pool).
+    with ThreadPoolExecutor(max_workers=max(1, min(FETCH_WORKERS, len(names)))) as ex:
         futures = {ex.submit(_load_chunk, name): name for name in names}
         for fut in as_completed(futures):
             try:
@@ -192,7 +195,8 @@ def build_cones(points):
 
 def build_points():
     """Read recent-history chunks and return the cone payload: de-duplicated
-    observations as [bearing, distance_nm, altitude_ft], plus per-bearing reach."""
+    observations as [bearing, distance_nm, altitude_ft, first_seen_epoch], plus
+    per-bearing reach."""
     rlat, rlon = receiver()
     # Receiver terms are constant for the whole run — compute once, not per row.
     rlat_r, rlon_r = math.radians(rlat), math.radians(rlon)
@@ -203,7 +207,7 @@ def build_points():
         names = names[-MAX_CHUNKS:]
 
     points = []
-    seen = {}         # coarse (lat, lon, alt-bin) cell -> index into points
+    seen = {}         # grid-cell coords (not raw lat/lon) -> index into points
     n_chunks = 0
     # Single pass over every observation: de-duplicate onto a coarse grid (this is
     # a coverage map, not a traffic replay) and convert each kept hit to
@@ -221,11 +225,13 @@ def build_points():
                 if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
                     continue
                 alt = _alt_ft(ac[1])
+                # Grid-cell coordinates, not raw lat/lon: lat/lon rounded to STEP-sized
+                # cells and altitude bucketed into ALT_BIN_FT bins.
                 key = (round(lat / STEP), round(lon / STEP), int(alt // ALT_BIN_FT))
                 idx = seen.get(key)
                 if idx is not None:                 # already have this cell —
-                    if now_i and now_i < points[idx][3]:
-                        points[idx][3] = now_i       # keep the earliest sighting
+                    if now_i and now_i < points[idx][FIRST_SEEN]:
+                        points[idx][FIRST_SEEN] = now_i   # keep the earliest sighting
                     continue
                 brg, dist = bearing_distance(sin1, cos1, rlat_r, rlon_r, lat, lon)
                 if dist > MAX_RANGE_NM:   # discard obvious bad positions
@@ -233,7 +239,7 @@ def build_points():
                 seen[key] = len(points)
                 points.append([round(brg, 1), round(dist, 2), int(alt), now_i])
 
-    times = [p[3] for p in points if p[3]]
+    times = [p[FIRST_SEEN] for p in points if p[FIRST_SEEN]]
     t_min = min(times) if times else 0
     t_max = max(times) if times else 0
     cone_all, cone_low = build_cones(points)
