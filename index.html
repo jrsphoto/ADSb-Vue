@@ -1332,21 +1332,6 @@ function ringsOf(geo) {
   if (geo.type === 'MultiLineString') return geo.coordinates;
   return [];
 }
-function geometryBounds(geo) {
-  let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
-  let seen = false;
-  for (const ring of ringsOf(geo)) {
-    for (const [lon, lat] of ring) {
-      if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
-      seen = true;
-      if (lon < minLon) minLon = lon;
-      if (lat < minLat) minLat = lat;
-      if (lon > maxLon) maxLon = lon;
-      if (lat > maxLat) maxLat = lat;
-    }
-  }
-  return seen ? { minLon, minLat, maxLon, maxLat } : null;
-}
 // even-odd point-in-polygon over all a feature's rings (US states have no holes)
 function pointInRing(lon, lat, ring) {
   let inside = false;
@@ -1390,14 +1375,23 @@ function featureIsHome(feat, rlon, rlat) {
   }
   return false;
 }
-// Lightweight geographic cull so we only draw borders near the current receiver.
-// The pads are intentionally generous because Europe-sized country shapes and
-// internal boundaries can otherwise disappear when the receiver is not near the
-// geometric center of the feature.
-function featureNearReceiver(feat, rlon, rlat, latPad = 8, lonPad = 12) {
-  const b = geometryBounds(feat.geometry);
-  if (!b) return false;
-  return !(b.maxLat < rlat - latPad || b.minLat > rlat + latPad || b.maxLon < rlon - lonPad || b.minLon > rlon + lonPad);
+// True if any vertex of `ring` is within `radiusNm` great-circle distance of the
+// receiver. Per-ring (not per-feature) because countries with dateline-crossing
+// bboxes — Russia, Canada w/ Aleutians, France w/ Polynésie, Antarctica —
+// otherwise leak their far rings onto the flat tangent-plane projection and
+// wrap the world around the receiver. Vertex sampling is enough at Natural
+// Earth 50m density; no need to test edge segments.
+function ringNearReceiverNm(ring, rlat, rlon, radiusNm) {
+  const R_NM = 3440.065;
+  const rphi = rlat * DEG, sinR = Math.sin(rphi), cosR = Math.cos(rphi);
+  const cosMax = Math.cos(radiusNm / R_NM);
+  for (const [lon, lat] of ring) {
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+    const phi = lat * DEG;
+    const c = sinR * Math.sin(phi) + cosR * Math.cos(phi) * Math.cos((lon - rlon) * DEG);
+    if (c >= cosMax) return true;
+  }
+  return false;
 }
 function textSprite(txt, color, px = 30) {
   const padX = 20, padY = 14;
@@ -1463,7 +1457,6 @@ async function loadStateMap(data) {
       // us-atlas already draws every US border (incl. the coastline); skip the US
       // country outline so it isn't redrawn as a green home-coloured coastal fringe.
       if ((feat.properties || {}).ADM0_A3 === 'USA') continue;
-      if (!featureNearReceiver(feat, RLON, RLAT, 24, 36)) continue;
       const home = featureIsHome(feat, RLON, RLAT);
       const matOuter = new THREE.LineBasicMaterial({
         color: home ? homeBorderCol : borderCol,
@@ -1478,6 +1471,7 @@ async function loadStateMap(data) {
       });
       for (const ring of ringsOf(feat.geometry)) {
         if (ring.length < 2) continue;
+        if (!ringNearReceiverNm(ring, RLAT, RLON, 1500)) continue;
         const outerPts = ring.map(([lon, lat]) => {
           const p = geoToXZ(lon, lat);
           p.y = 0.08;
@@ -1516,13 +1510,9 @@ async function loadStateMap(data) {
     for (const feat of gj.features) {
       const props = feat.properties || {};
       if (props.ADM0_A3 === 'USA') continue;   // us-atlas already draws US states
-      const isFranceRegion = props.ADM0_A3 === 'FRA' && /region boundary/i.test(props.FEATURECLA || '');
-      const near = isFranceRegion
-        ? featureNearReceiver(feat, RLON, RLAT, 30, 42)
-        : featureNearReceiver(feat, RLON, RLAT, 22, 34);
-      if (!near) continue;
       for (const ring of ringsOf(feat.geometry)) {
         if (ring.length < 2) continue;
+        if (!ringNearReceiverNm(ring, RLAT, RLON, 1300)) continue;
         const pts = ring.map(([lon, lat]) => {
           const p = geoToXZ(lon, lat);
           p.y = 0.12; // Lift slightly to avoid z-fighting with country lines/ground.
