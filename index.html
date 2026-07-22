@@ -733,17 +733,17 @@ function initScene(data) {
   key.position.set(-0.4, 1, 0.6);
   scene.add(key);
 
-  // Far plane is generous: worldwide borders can extend a few thousand scene
-  // units from the receiver, so a small far plane would clip them as you zoom out
-  // (a black "wipe" from the horizon). maxDistance then caps zoom-out so the
-  // camera never gets far enough to reach it.
-  camera = new THREE.PerspectiveCamera(55, W/H, 0.1, 14000);
+  // Far plane + maxDistance are generous because the azimuthal-equidistant
+  // border projection puts the earth's antipode at ~10807 nm from origin;
+  // camera has to be able to sit back far enough to see the whole disk without
+  // clipping (a "black wipe" from the horizon).
+  camera = new THREE.PerspectiveCamera(55, W/H, 0.1, 30000);
   camera.position.set(-235, 300, 205);
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.07;
-  controls.maxDistance = 6000;
+  controls.maxDistance = 18000;
   controls.target.set(0, 20, 0);
   // Restore the saved map orientation, if any (guarded against bad values).
   if (_saved.cam && _ok3(_saved.cam.p) && _ok3(_saved.cam.t)) {
@@ -1321,9 +1321,29 @@ function flattenCities(j) {
     .map(c => [c[0], +c[1], +c[2]]);
 }
 
+// Azimuthal-equidistant projection centered on the receiver: distance and
+// bearing from the receiver are preserved exactly, so far borders draw at
+// their true great-circle distance in their true direction. Near the receiver
+// this is indistinguishable from the old flat tangent-plane approximation
+// (they agree to first order at the origin); at global scale it prevents the
+// wrap-around distortion that let Russia, France w/ Polynésie, etc. drape
+// across the eastern hemisphere. The whole earth fits in a disk of radius
+// pi*R_earth (~10807 nm). Only borders/lakes/cities use this — cone, points,
+// and hit rendering already work directly in bearing/distance via toXYZ().
 function makeGeoToXZ(data) {
-  const RLAT = data.recv_lat, RLON = data.recv_lon, RADL = RLAT * DEG;
-  return (lon, lat) => new THREE.Vector3((lat - RLAT) * 60, 0, (lon - RLON) * Math.cos(RADL) * 60);
+  const R_NM = 3440.065;
+  const rphi = data.recv_lat * DEG, rlon = data.recv_lon;
+  const sinR = Math.sin(rphi), cosR = Math.cos(rphi);
+  return (lon, lat) => {
+    const phi = lat * DEG, dlon = (lon - rlon) * DEG;
+    const sinP = Math.sin(phi), cosP = Math.cos(phi);
+    const cosDlon = Math.cos(dlon), sinDlon = Math.sin(dlon);
+    const cosC = Math.max(-1, Math.min(1, sinR * sinP + cosR * cosP * cosDlon));
+    const d = Math.acos(cosC) * R_NM;
+    if (d < 1e-6) return new THREE.Vector3(0, 0, 0);
+    const brg = Math.atan2(sinDlon * cosP, cosR * sinP - sinR * cosP * cosDlon);
+    return new THREE.Vector3(d * Math.cos(brg), 0, d * Math.sin(brg));
+  };
 }
 function ringsOf(geo) {
   if (geo.type === 'Polygon') return geo.coordinates;
@@ -1331,21 +1351,6 @@ function ringsOf(geo) {
   if (geo.type === 'LineString') return [geo.coordinates];
   if (geo.type === 'MultiLineString') return geo.coordinates;
   return [];
-}
-function geometryBounds(geo) {
-  let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
-  let seen = false;
-  for (const ring of ringsOf(geo)) {
-    for (const [lon, lat] of ring) {
-      if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
-      seen = true;
-      if (lon < minLon) minLon = lon;
-      if (lat < minLat) minLat = lat;
-      if (lon > maxLon) maxLon = lon;
-      if (lat > maxLat) maxLat = lat;
-    }
-  }
-  return seen ? { minLon, minLat, maxLon, maxLat } : null;
 }
 // even-odd point-in-polygon over all a feature's rings (US states have no holes)
 function pointInRing(lon, lat, ring) {
@@ -1389,15 +1394,6 @@ function featureIsHome(feat, rlon, rlat) {
     }
   }
   return false;
-}
-// Lightweight geographic cull so we only draw borders near the current receiver.
-// The pads are intentionally generous because Europe-sized country shapes and
-// internal boundaries can otherwise disappear when the receiver is not near the
-// geometric center of the feature.
-function featureNearReceiver(feat, rlon, rlat, latPad = 8, lonPad = 12) {
-  const b = geometryBounds(feat.geometry);
-  if (!b) return false;
-  return !(b.maxLat < rlat - latPad || b.minLat > rlat + latPad || b.maxLon < rlon - lonPad || b.minLon > rlon + lonPad);
 }
 function textSprite(txt, color, px = 30) {
   const padX = 20, padY = 14;
@@ -1463,7 +1459,6 @@ async function loadStateMap(data) {
       // us-atlas already draws every US border (incl. the coastline); skip the US
       // country outline so it isn't redrawn as a green home-coloured coastal fringe.
       if ((feat.properties || {}).ADM0_A3 === 'USA') continue;
-      if (!featureNearReceiver(feat, RLON, RLAT, 24, 36)) continue;
       const home = featureIsHome(feat, RLON, RLAT);
       const matOuter = new THREE.LineBasicMaterial({
         color: home ? homeBorderCol : borderCol,
@@ -1516,11 +1511,6 @@ async function loadStateMap(data) {
     for (const feat of gj.features) {
       const props = feat.properties || {};
       if (props.ADM0_A3 === 'USA') continue;   // us-atlas already draws US states
-      const isFranceRegion = props.ADM0_A3 === 'FRA' && /region boundary/i.test(props.FEATURECLA || '');
-      const near = isFranceRegion
-        ? featureNearReceiver(feat, RLON, RLAT, 30, 42)
-        : featureNearReceiver(feat, RLON, RLAT, 22, 34);
-      if (!near) continue;
       for (const ring of ringsOf(feat.geometry)) {
         if (ring.length < 2) continue;
         const pts = ring.map(([lon, lat]) => {
