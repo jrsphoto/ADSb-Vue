@@ -733,12 +733,17 @@ function initScene(data) {
   key.position.set(-0.4, 1, 0.6);
   scene.add(key);
 
-  camera = new THREE.PerspectiveCamera(55, W/H, 0.1, 3000);
+  // Far plane is generous: worldwide borders can extend a few thousand scene
+  // units from the receiver, so a small far plane would clip them as you zoom out
+  // (a black "wipe" from the horizon). maxDistance then caps zoom-out so the
+  // camera never gets far enough to reach it.
+  camera = new THREE.PerspectiveCamera(55, W/H, 0.1, 14000);
   camera.position.set(-235, 300, 205);
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.07;
+  controls.maxDistance = 6000;
   controls.target.set(0, 20, 0);
   // Restore the saved map orientation, if any (guarded against bad values).
   if (_saved.cam && _ok3(_saved.cam.p) && _ok3(_saved.cam.t)) {
@@ -822,6 +827,15 @@ function initScene(data) {
     },
     play(opts) { startPlayback(opts || {}); },
     stop() { stopPlayback(playCut); this.freeze(); return this.stats(); },
+    zoomTo(dist) {   // dolly the camera to `dist` from target (clamped by maxDistance), render once
+      this.freeze();
+      const dir = camera.position.clone().sub(controls.target).normalize();
+      camera.position.copy(controls.target).addScaledVector(dir, dist);
+      controls.update(); renderer.render(scene, camera);
+      return { requested: dist, actual: Math.round(camera.position.distanceTo(controls.target)),
+               far: camera.far, maxDistance: controls.maxDistance,
+               renderedTris: renderer.info.render.triangles };
+    },
     // render one composited export frame (3D + timestamp overlay) at a fraction
     exportFrame(frac) {
       this.seek(frac);
@@ -1446,6 +1460,9 @@ async function loadStateMap(data) {
     const r = await fetch('https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson');
     const gj = await r.json();
     for (const feat of gj.features) {
+      // us-atlas already draws every US border (incl. the coastline); skip the US
+      // country outline so it isn't redrawn as a green home-coloured coastal fringe.
+      if ((feat.properties || {}).ADM0_A3 === 'USA') continue;
       if (!featureNearReceiver(feat, RLON, RLAT, 24, 36)) continue;
       const home = featureIsHome(feat, RLON, RLAT);
       const matOuter = new THREE.LineBasicMaterial({
