@@ -1318,6 +1318,21 @@ function ringsOf(geo) {
   if (geo.type === 'MultiLineString') return geo.coordinates;
   return [];
 }
+function geometryBounds(geo) {
+  let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+  let seen = false;
+  for (const ring of ringsOf(geo)) {
+    for (const [lon, lat] of ring) {
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+      seen = true;
+      if (lon < minLon) minLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lon > maxLon) maxLon = lon;
+      if (lat > maxLat) maxLat = lat;
+    }
+  }
+  return seen ? { minLon, minLat, maxLon, maxLat } : null;
+}
 // even-odd point-in-polygon over all a feature's rings (US states have no holes)
 function pointInRing(lon, lat, ring) {
   let inside = false;
@@ -1348,19 +1363,62 @@ function homeStateIds(features, rlon, rlat) {
   }
   return home;
 }
+// True if the receiver is inside a feature, or close to its border.
+function featureIsHome(feat, rlon, rlat) {
+  const NEAR = 35 / 60;   // ~35 nm in degrees latitude
+  const cosL = Math.cos(rlat * DEG);
+  for (const ring of ringsOf(feat.geometry)) {
+    if (pointInRing(rlon, rlat, ring)) return true;
+    for (const [lon, lat] of ring) {
+      const dLat = lat - rlat, dLon = (lon - rlon) * cosL;
+      if (dLat*dLat + dLon*dLon < NEAR*NEAR) return true;
+    }
+  }
+  return false;
+}
+// Lightweight geographic cull so we only draw borders near the current receiver.
+// The pads are intentionally generous because Europe-sized country shapes and
+// internal boundaries can otherwise disappear when the receiver is not near the
+// geometric center of the feature.
+function featureNearReceiver(feat, rlon, rlat, latPad = 8, lonPad = 12) {
+  const b = geometryBounds(feat.geometry);
+  if (!b) return false;
+  return !(b.maxLat < rlat - latPad || b.minLat > rlat + latPad || b.maxLon < rlon - lonPad || b.minLon > rlon + lonPad);
+}
 function textSprite(txt, color, px = 30) {
-  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
+  const padX = 20, padY = 14;
+  // Two-pass canvas sizing: measure first, then render to the exact width.
+  const probe = document.createElement('canvas');
+  const pctx = probe.getContext('2d');
+  pctx.font = 'bold ' + px + 'px monospace';
+  const tw = Math.ceil(pctx.measureText(txt).width);
+
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(96, tw + padX * 2);
+  cv.height = Math.max(48, px + padY * 2);
   const cx = cv.getContext('2d');
-  cx.fillStyle = color; cx.font = 'bold ' + px + 'px monospace';
-  cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(txt, 128, 32);
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), transparent: true, opacity: 0.85, depthTest: false }));
-  sp.scale.set(28, 7, 1);
+  cx.fillStyle = color;
+  cx.font = 'bold ' + px + 'px monospace';
+  cx.textAlign = 'center';
+  cx.textBaseline = 'middle';
+  cx.fillText(txt, cv.width / 2, cv.height / 2);
+
+  const tex = new THREE.CanvasTexture(cv);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.85, depthTest: false }));
+  const h = 7;
+  const w = Math.min(90, Math.max(14, (cv.width / cv.height) * h));
+  sp.scale.set(w, h, 1);
   return sp;
 }
 
 async function loadStateMap(data) {
   const geoToXZ = makeGeoToXZ(data);
   const RLAT = data.recv_lat, RLON = data.recv_lon, RADL = RLAT * DEG;
+  const borderCol = new THREE.Color(data.border_color || '#3f82b8');
+  const homeBorderCol = new THREE.Color(data.home_border_color || '#6fd6c0');
 
   // --- state borders ---
   try {
@@ -1371,8 +1429,6 @@ async function loadStateMap(data) {
     const tj = await resp.json();
     const states = topo.feature(tj, tj.objects.states);
     const homeSet = homeStateIds(states.features, RLON, RLAT);
-    const borderCol = new THREE.Color(data.border_color || '#3f82b8');
-    const homeBorderCol = new THREE.Color(data.home_border_color || '#6fd6c0');
     for (const feat of states.features) {
       const home = homeSet.has(String(feat.id));
       const mat = new THREE.LineBasicMaterial({
@@ -1384,6 +1440,84 @@ async function loadStateMap(data) {
       }
     }
   } catch (e) { console.warn('state map:', e); }
+
+  // --- country borders (global context; needed outside North America) ---
+  try {
+    const r = await fetch('https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson');
+    const gj = await r.json();
+    for (const feat of gj.features) {
+      if (!featureNearReceiver(feat, RLON, RLAT, 24, 36)) continue;
+      const home = featureIsHome(feat, RLON, RLAT);
+      const matOuter = new THREE.LineBasicMaterial({
+        color: home ? homeBorderCol : borderCol,
+        transparent: true,
+        opacity: home ? 0.5 : 0.36,
+        depthTest: false,
+      });
+      const mat = new THREE.LineBasicMaterial({
+        color: home ? homeBorderCol : borderCol,
+        transparent: true,
+        opacity: home ? 0.98 : 0.74,
+      });
+      for (const ring of ringsOf(feat.geometry)) {
+        if (ring.length < 2) continue;
+        const outerPts = ring.map(([lon, lat]) => {
+          const p = geoToXZ(lon, lat);
+          p.y = 0.08;
+          return p;
+        });
+        const mainPts = ring.map(([lon, lat]) => {
+          const p = geoToXZ(lon, lat);
+          p.y = 0.12;
+          return p;
+        });
+        const geoOuter = new THREE.BufferGeometry().setFromPoints(outerPts);
+        const geo = new THREE.BufferGeometry().setFromPoints(mainPts);
+        const lOuter = new THREE.Line(geoOuter, matOuter);
+        lOuter.renderOrder = 4;
+        scene.add(lOuter);
+        const lMain = new THREE.Line(geo, mat);
+        lMain.renderOrder = 5;
+        scene.add(lMain);
+      }
+    }
+  } catch (e) { console.warn('country map:', e); }
+
+  // --- province/state borders (admin-1 lines, subtle so country borders remain primary) ---
+  // 50m from jsDelivr: a proper CDN, and ~0.9 MB vs ~20 MB for the 10m layer —
+  // plenty for orientation lines. US admin-1 is skipped here because the crisper
+  // us-atlas layer above already draws US state borders (and their home fill).
+  try {
+    const r = await fetch('https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_1_states_provinces_lines.geojson');
+    const gj = await r.json();
+    const subMat = new THREE.LineBasicMaterial({
+      color: new THREE.Color(borderCol).lerp(new THREE.Color(homeBorderCol), 0.35),
+      transparent: true,
+      opacity: 0.62,
+      depthTest: false,
+    });
+    for (const feat of gj.features) {
+      const props = feat.properties || {};
+      if (props.ADM0_A3 === 'USA') continue;   // us-atlas already draws US states
+      const isFranceRegion = props.ADM0_A3 === 'FRA' && /region boundary/i.test(props.FEATURECLA || '');
+      const near = isFranceRegion
+        ? featureNearReceiver(feat, RLON, RLAT, 30, 42)
+        : featureNearReceiver(feat, RLON, RLAT, 22, 34);
+      if (!near) continue;
+      for (const ring of ringsOf(feat.geometry)) {
+        if (ring.length < 2) continue;
+        const pts = ring.map(([lon, lat]) => {
+          const p = geoToXZ(lon, lat);
+          p.y = 0.12; // Lift slightly to avoid z-fighting with country lines/ground.
+          return p;
+        });
+        const geo = new THREE.BufferGeometry().setFromPoints(pts);
+        const line = new THREE.Line(geo, subMat);
+        line.renderOrder = 5;
+        scene.add(line);
+      }
+    }
+  } catch (e) { console.warn('province/state map:', e); }
 
   // --- lakes (Natural Earth via jsDelivr GitHub proxy) — orientation only ---
   try {

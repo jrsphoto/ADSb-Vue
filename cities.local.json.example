@@ -1,15 +1,925 @@
-[
-  ["MSP", 44.98, -93.27],
-  ["Duluth", 46.79, -92.10],
-  ["Rochester", 44.02, -92.48],
-  ["Eau Claire", 44.81, -91.50],
-  ["La Crosse", 43.81, -91.25],
-  ["St Cloud", 45.56, -94.16],
-  ["Madison", 43.07, -89.40],
-  ["Green Bay", 44.51, -88.02],
-  ["Wausau", 44.96, -89.63],
-  ["Fargo", 46.88, -96.79],
-  ["Sioux Falls", 43.55, -96.70],
-  ["Des Moines", 41.59, -93.62],
-  ["Milwaukee", 43.04, -87.91]
-]
+{
+  "Alabama": [
+    ["Huntsville", 34.73, -86.59],
+    ["Birmingham", 33.52, -86.80],
+    ["Montgomery", 32.37, -86.30],
+    ["Mobile", 30.69, -88.04],
+    ["Tuscaloosa", 33.21, -87.57]
+  ],
+  "Alaska": [
+    ["Anchorage", 61.22, -149.90],
+    ["Fairbanks", 64.84, -147.72],
+    ["Juneau", 58.30, -134.42],
+    ["Eagle River", 61.32, -149.57]
+  ],
+  "Arizona": [
+    ["Phoenix", 33.45, -112.07],
+    ["Tucson", 32.22, -110.93],
+    ["Mesa", 33.42, -111.82]
+  ],
+  "Arkansas": [
+    ["Little Rock", 34.75, -92.29],
+    ["Fort Smith", 35.39, -94.40],
+    ["Fayetteville", 36.06, -94.16],
+    ["Jonesboro", 35.84, -90.70]
+  ],
+  "California": [
+    ["Los Angeles", 34.05, -118.24],
+    ["San Diego", 32.72, -117.16],
+    ["San Jose", 37.34, -121.89],
+    ["San Francisco", 37.77, -122.42],
+    ["Fresno", 36.75, -119.77],
+    ["Sacramento", 38.58, -121.49],
+    ["Bakersfield", 35.37, -119.02],
+    ["Riverside", 33.95, -117.40],
+    ["Stockton", 37.96, -121.29],
+    ["Redding", 40.59, -122.39]
+  ],
+  "Colorado": [
+    ["Denver", 39.74, -104.98],
+    ["Colorado Springs", 38.83, -104.82],
+    ["Fort Collins", 40.59, -105.08]
+  ],
+  "Connecticut": [
+    ["Bridgeport", 41.18, -73.19],
+    ["New Haven", 41.31, -72.93],
+    ["Stamford", 41.05, -73.54],
+    ["Hartford", 41.76, -72.69]
+  ],
+  "Delaware": [
+    ["Wilmington", 39.75, -75.55],
+    ["Dover", 39.16, -75.52],
+    ["Newark", 39.68, -75.75],
+    ["Middletown", 39.45, -75.72]
+  ],
+  "Florida": [
+    ["Jacksonville", 30.33, -81.66],
+    ["Miami", 25.77, -80.19],
+    ["Tampa", 27.95, -82.46],
+    ["Orlando", 28.54, -81.38],
+    ["St. Petersburg", 27.77, -82.68]
+  ],
+  "Georgia": [
+    ["Atlanta", 33.75, -84.39],
+    ["Columbus", 32.46, -84.99],
+    ["Savannah", 32.08, -81.10],
+    ["Athens", 33.96, -83.38],
+    ["South Fulton", 33.59, -84.67]
+  ],
+  "Hawaii": [
+    ["Honolulu", 21.31, -157.86],
+    ["Hilo", 19.73, -155.09]
+  ],
+  "Idaho": [
+    ["Boise", 43.61, -116.20],
+    ["Nampa", 43.54, -116.56],
+    ["Idaho Falls", 43.47, -112.03],
+    ["Pocatello", 42.87, -112.45]
+  ],
+  "Illinois": [
+    ["Chicago", 41.85, -87.65],
+    ["Aurora", 41.76, -88.32],
+    ["Rockford", 42.27, -89.09],
+    ["Joliet", 41.53, -88.08]
+  ],
+  "Indiana": [
+    ["Indianapolis", 39.77, -86.16],
+    ["Fort Wayne", 41.13, -85.13],
+    ["Evansville", 37.97, -87.56],
+    ["South Bend", 41.68, -86.25],
+    ["Carmel", 39.98, -86.12]
+  ],
+  "Iowa": [
+    ["Des Moines", 41.60, -93.61],
+    ["Cedar Rapids", 42.01, -91.64],
+    ["Davenport", 41.52, -90.58],
+    ["Sioux City", 42.50, -96.40],
+    ["Iowa City", 41.66, -91.53]
+  ],
+  "Kansas": [
+    ["Wichita", 37.69, -97.34],
+    ["Overland Park", 38.98, -94.67],
+    ["Olathe", 38.88, -94.82],
+    ["Topeka", 39.05, -95.68]
+  ],
+  "Kentucky": [
+    ["Louisville", 38.25, -85.76],
+    ["Lexington", 37.99, -84.48],
+    ["Meads", 38.41, -82.71],
+    ["Bowling Green", 36.99, -86.44]
+  ],
+  "Louisiana": [
+    ["New Orleans", 29.95, -90.08],
+    ["Baton Rouge", 30.44, -91.19],
+    ["Shreveport", 32.53, -93.75],
+    ["Lafayette", 30.22, -92.02]
+  ],
+  "Maine": [
+    ["Portland", 43.66, -70.26],
+    ["Lewiston", 44.10, -70.21],
+    ["Bangor", 44.80, -68.77]
+  ],
+  "Maryland": [
+    ["Baltimore", 39.29, -76.61],
+    ["Columbia", 39.24, -76.84],
+    ["Germantown", 39.17, -77.27],
+    ["Silver Spring", 38.99, -77.03],
+    ["Frederick", 39.41, -77.41]
+  ],
+  "Massachusetts": [
+    ["Boston", 42.36, -71.06],
+    ["Worcester", 42.26, -71.80],
+    ["Springfield", 42.10, -72.59],
+    ["Lowell", 42.63, -71.32]
+  ],
+  "Michigan": [
+    ["Detroit", 42.33, -83.05],
+    ["Grand Rapids", 42.96, -85.67],
+    ["Warren", 42.49, -83.01],
+    ["Ann Arbor", 42.28, -83.74]
+  ],
+  "Minnesota": [
+    ["Minneapolis", 44.98, -93.26],
+    ["Rochester", 44.02, -92.47],
+    ["Duluth", 46.78, -92.11]
+  ],
+  "Mississippi": [
+    ["Jackson", 32.30, -90.18],
+    ["Gulfport", 30.37, -89.09],
+    ["Southaven", 34.99, -90.01],
+    ["Hattiesburg", 31.33, -89.29]
+  ],
+  "Missouri": [
+    ["Kansas City", 39.10, -94.58],
+    ["St. Louis", 38.63, -90.20],
+    ["Springfield", 37.22, -93.30],
+    ["Columbia", 38.95, -92.33]
+  ],
+  "Montana": [
+    ["Billings", 45.78, -108.50],
+    ["Missoula", 46.87, -113.99],
+    ["Great Falls", 47.50, -111.30],
+    ["Bozeman", 45.68, -111.04],
+    ["Butte", 46.00, -112.53]
+  ],
+  "Nebraska": [
+    ["Omaha", 41.26, -95.94],
+    ["Lincoln", 40.80, -96.67],
+    ["Grand Island", 40.93, -98.34],
+    ["Kearney", 40.70, -99.08]
+  ],
+  "Nevada": [
+    ["Las Vegas", 36.17, -115.14],
+    ["Henderson", 36.04, -114.98],
+    ["Reno", 39.53, -119.81]
+  ],
+  "New Hampshire": [
+    ["Manchester", 43.00, -71.45],
+    ["Nashua", 42.77, -71.47],
+    ["Concord", 43.21, -71.54],
+    ["Derry Village", 42.89, -71.31]
+  ],
+  "New Jersey": [
+    ["Newark", 40.74, -74.17],
+    ["Paterson", 40.92, -74.17],
+    ["Edison", 40.52, -74.41]
+  ],
+  "New Mexico": [
+    ["Albuquerque", 35.08, -106.65],
+    ["Las Cruces", 32.31, -106.78],
+    ["Rio Rancho", 35.23, -106.66],
+    ["Santa Fe", 35.69, -105.94]
+  ],
+  "New York": [
+    ["New York City", 40.71, -74.01],
+    ["Buffalo", 42.89, -78.88],
+    ["Rochester", 43.16, -77.61],
+    ["Syracuse", 43.05, -76.15],
+    ["Albany", 42.65, -73.75],
+    ["Binghamton", 42.10, -75.92]
+  ],
+  "North Carolina": [
+    ["Charlotte", 35.23, -80.84],
+    ["Raleigh", 35.77, -78.64],
+    ["Greensboro", 36.07, -79.79],
+    ["Durham", 35.99, -78.90],
+    ["Winston-Salem", 36.10, -80.24]
+  ],
+  "North Dakota": [
+    ["Fargo", 46.88, -96.79],
+    ["Bismarck", 46.81, -100.78],
+    ["Grand Forks", 47.93, -97.03],
+    ["Minot", 48.23, -101.30]
+  ],
+  "Ohio": [
+    ["Columbus", 39.96, -83.00],
+    ["Cleveland", 41.50, -81.70],
+    ["Cincinnati", 39.13, -84.51],
+    ["Toledo", 41.66, -83.56],
+    ["Akron", 41.08, -81.52]
+  ],
+  "Oklahoma": [
+    ["Oklahoma City", 35.47, -97.52],
+    ["Tulsa", 36.15, -95.99],
+    ["Norman", 35.22, -97.44],
+    ["Broken Arrow", 36.05, -95.79],
+    ["Lawton", 34.61, -98.39]
+  ],
+  "Oregon": [
+    ["Portland", 45.52, -122.68],
+    ["Eugene", 44.05, -123.09],
+    ["Salem", 44.94, -123.04],
+    ["Gresham", 45.50, -122.43],
+    ["Hillsboro", 45.52, -122.99]
+  ],
+  "Pennsylvania": [
+    ["Philadelphia", 39.95, -75.16],
+    ["Pittsburgh", 40.44, -80.00],
+    ["Allentown", 40.61, -75.49],
+    ["Erie", 42.13, -80.09],
+    ["Reading", 40.34, -75.93]
+  ],
+  "Rhode Island": [
+    ["Providence", 41.82, -71.41]
+  ],
+  "South Carolina": [
+    ["Columbia", 34.00, -81.03],
+    ["Charleston", 32.78, -79.93],
+    ["Rock Hill", 34.92, -81.03]
+  ],
+  "South Dakota": [
+    ["Sioux Falls", 43.54, -96.73],
+    ["Rapid City", 44.08, -103.23],
+    ["Aberdeen", 45.46, -98.49],
+    ["Brookings", 44.31, -96.80],
+    ["Watertown", 44.90, -97.12]
+  ],
+  "Tennessee": [
+    ["Nashville", 36.17, -86.78],
+    ["Memphis", 35.15, -90.05],
+    ["Knoxville", 35.96, -83.92],
+    ["Chattanooga", 35.05, -85.31],
+    ["Clarksville", 36.53, -87.36]
+  ],
+  "Texas": [
+    ["Houston", 29.76, -95.36],
+    ["San Antonio", 29.42, -98.49],
+    ["Dallas", 32.78, -96.81],
+    ["Fort Worth", 32.73, -97.32],
+    ["Austin", 30.27, -97.74],
+    ["El Paso", 31.76, -106.49],
+    ["Corpus Christi", 27.80, -97.40],
+    ["Lubbock", 33.58, -101.85],
+    ["Amarillo", 35.22, -101.83],
+    ["Brownsville", 25.90, -97.50]
+  ],
+  "Utah": [
+    ["Salt Lake City", 40.76, -111.89],
+    ["Provo", 40.23, -111.66],
+    ["West Jordan", 40.61, -111.94]
+  ],
+  "Vermont": [
+    ["Burlington", 44.48, -73.21],
+    ["Rutland", 43.61, -72.97]
+  ],
+  "Virginia": [
+    ["Virginia Beach", 36.85, -75.98],
+    ["Norfolk", 36.85, -76.29],
+    ["Richmond", 37.55, -77.46],
+    ["Arlington", 38.88, -77.10]
+  ],
+  "Washington": [
+    ["Seattle", 47.61, -122.33],
+    ["Spokane", 47.66, -117.43],
+    ["Tacoma", 47.25, -122.44],
+    ["Vancouver", 45.64, -122.66]
+  ],
+  "West Virginia": [
+    ["Huntington", 38.42, -82.45],
+    ["Charleston", 38.35, -81.63],
+    ["Parkersburg", 39.27, -81.56],
+    ["Morgantown", 39.63, -79.96],
+    ["Wheeling", 40.06, -80.72]
+  ],
+  "Wisconsin": [
+    ["Milwaukee", 43.04, -87.91],
+    ["Madison", 43.07, -89.40],
+    ["Green Bay", 44.52, -88.02],
+    ["Kenosha", 42.58, -87.82]
+  ],
+  "Wyoming": [
+    ["Cheyenne", 41.14, -104.82],
+    ["Casper", 42.87, -106.31],
+    ["Gillette", 44.29, -105.50],
+    ["Laramie", 41.31, -105.59],
+    ["Rock Springs", 41.59, -109.20]
+  ],
+  "Albania": [
+    ["Tirana", 41.33, 19.82],
+    ["Durr\u00ebs", 41.32, 19.45],
+    ["Vlor\u00eb", 40.47, 19.48],
+    ["Elbasan", 41.11, 20.08],
+    ["Shkod\u00ebr", 42.07, 19.51]
+  ],
+  "Andorra": [
+    ["Andorra la Vella", 42.51, 1.52]
+  ],
+  "Austria": [
+    ["Vienna", 48.21, 16.37],
+    ["Graz", 47.07, 15.44],
+    ["Linz", 48.31, 14.29],
+    ["Salzburg", 47.80, 13.04],
+    ["Innsbruck", 47.26, 11.39]
+  ],
+  "Belgium": [
+    ["Brussels", 50.85, 4.35],
+    ["Antwerp", 51.22, 4.40],
+    ["Gent", 51.05, 3.72],
+    ["Charleroi", 50.41, 4.44],
+    ["Li\u00e8ge", 50.63, 5.57]
+  ],
+  "Bosnia and Herzegovina": [
+    ["Sarajevo", 43.85, 18.36],
+    ["Banja Luka", 44.78, 17.21],
+    ["Zenica", 44.20, 17.90],
+    ["Tuzla", 44.54, 18.67],
+    ["Mostar", 43.34, 17.81]
+  ],
+  "Bulgaria": [
+    ["Sofia", 42.70, 23.32],
+    ["Plovdiv", 42.15, 24.75],
+    ["Varna", 43.22, 27.91],
+    ["Burgas", 42.51, 27.47],
+    ["Stara Zagora", 42.43, 25.64]
+  ],
+  "Canada - Alberta": [
+    ["Calgary", 51.05, -114.09],
+    ["Edmonton", 53.55, -113.47],
+    ["Lethbridge", 49.70, -112.82],
+    ["Red Deer", 52.27, -113.80],
+    ["Grande Prairie", 55.17, -118.80]
+  ],
+  "Canada - British Columbia": [
+    ["Vancouver", 49.25, -123.12],
+    ["Victoria", 48.44, -123.35],
+    ["Kelowna", 49.88, -119.49],
+    ["Abbotsford", 49.06, -122.25],
+    ["Kamloops", 50.67, -120.32]
+  ],
+  "Canada - Manitoba": [
+    ["Winnipeg", 49.88, -97.15],
+    ["Brandon", 49.85, -99.95],
+    ["Steinbach", 49.53, -96.68],
+    ["Thompson", 55.74, -97.86],
+    ["Portage la Prairie", 49.97, -98.29]
+  ],
+  "Canada - New Brunswick": [
+    ["Moncton", 46.09, -64.80],
+    ["Saint John", 45.27, -66.06],
+    ["Fredericton", 45.95, -66.67],
+    ["Miramichi", 47.03, -65.50],
+    ["Edmundston", 47.37, -68.33]
+  ],
+  "Canada - Newfoundland and Labrador": [
+    ["St. John's", 47.56, -52.71],
+    ["Corner Brook", 48.95, -57.95],
+    ["Grand Falls-Windsor", 48.93, -55.66],
+    ["Gander", 48.96, -54.62],
+    ["Happy Valley-Goose Bay", 53.30, -60.33]
+  ],
+  "Canada - Northwest Territories": [
+    ["Yellowknife", 62.45, -114.37],
+    ["Hay River", 60.82, -115.80],
+    ["Inuvik", 68.36, -133.73],
+    ["Fort Smith", 60.00, -111.89],
+    ["Behchokǫ̀", 62.80, -116.05]
+  ],
+  "Canada - Nova Scotia": [
+    ["Halifax", 44.64, -63.58],
+    ["Sydney", 46.14, -60.18],
+    ["New Glasgow", 45.58, -62.65],
+    ["Truro", 45.37, -63.27],
+    ["Kentville", 45.08, -64.50]
+  ],
+  "Canada - Nunavut": [
+    ["Iqaluit", 63.75, -68.52],
+    ["Rankin Inlet", 62.81, -92.09],
+    ["Arviat", 61.11, -94.06],
+    ["Baker Lake", 64.32, -96.02],
+    ["Igloolik", 69.38, -81.80]
+  ],
+  "Canada - Ontario": [
+    ["Toronto", 43.71, -79.40],
+    ["Ottawa", 45.41, -75.70],
+    ["Hamilton", 43.25, -79.85],
+    ["London", 42.98, -81.23],
+    ["Kitchener", 43.43, -80.51]
+  ],
+  "Canada - Prince Edward Island": [
+    ["Charlottetown", 46.23, -63.13],
+    ["Summerside", 46.39, -63.79],
+    ["Three Rivers", 46.18, -62.57],
+    ["Alberton", 46.82, -64.07],
+    ["Eastern Kings", 46.43, -62.10]
+  ],
+  "Canada - Quebec": [
+    ["Montréal", 45.51, -73.59],
+    ["Québec", 46.81, -71.21],
+    ["Gatineau", 45.48, -75.70],
+    ["Saguenay", 48.42, -71.07],
+    ["Trois-Rivières", 46.35, -72.55]
+  ],
+  "Canada - Saskatchewan": [
+    ["Saskatoon", 52.13, -106.67],
+    ["Regina", 50.45, -104.62],
+    ["Prince Albert", 53.20, -105.77],
+    ["Moose Jaw", 50.40, -105.53],
+    ["North Battleford", 52.78, -108.30]
+  ],
+  "Canada - Yukon": [
+    ["Whitehorse", 60.72, -135.05],
+    ["Watson Lake", 60.06, -128.71],
+    ["Dawson City", 64.06, -139.43],
+    ["Haines Junction", 60.75, -137.51],
+    ["Carmacks", 62.09, -136.29]
+  ],
+  "Croatia": [
+    ["Zagreb", 45.81, 15.98],
+    ["Split", 43.51, 16.44],
+    ["Rijeka", 45.33, 14.44],
+    ["Osijek", 45.55, 18.69],
+    ["Zadar", 44.12, 15.23]
+  ],
+  "Cyprus": [
+    ["Nicosia", 35.17, 33.35],
+    ["Limassol", 34.68, 33.04],
+    ["Larnaca", 34.92, 33.63],
+    ["Famagusta", 35.12, 33.94]
+  ],
+  "Czechia": [
+    ["Prague", 50.09, 14.42],
+    ["Brno", 49.20, 16.61],
+    ["Ostrava", 49.83, 18.28],
+    ["Pilsen", 49.75, 13.38],
+    ["Liberec", 50.77, 15.06]
+  ],
+  "Denmark": [
+    ["Copenhagen", 55.68, 12.57],
+    ["\u00c5rhus", 56.16, 10.21],
+    ["Odense", 55.40, 10.39],
+    ["Aalborg", 57.05, 9.92]
+  ],
+  "Estonia": [
+    ["Tallinn", 59.44, 24.75],
+    ["Tartu", 58.38, 26.73],
+    ["Narva", 59.38, 28.19],
+    ["P\u00e4rnu", 58.39, 24.50],
+    ["Kohtla-J\u00e4rve", 59.40, 27.27]
+  ],
+  "Faroe Islands": [
+    ["T\u00f3rshavn", 62.01, -6.77],
+    ["Klaksv\u00edk", 62.23, -6.59]
+  ],
+  "Finland": [
+    ["Helsinki", 60.17, 24.94],
+    ["Espoo", 60.21, 24.65],
+    ["Tampere", 61.50, 23.79],
+    ["Oulu", 65.01, 25.47]
+  ],
+  "France": [
+    ["Paris", 48.85, 2.35],
+    ["Marseille", 43.30, 5.38],
+    ["Lyon", 45.75, 4.85],
+    ["Toulouse", 43.60, 1.44],
+    ["Nice", 43.70, 7.27],
+    ["Nantes", 47.22, -1.55],
+    ["Strasbourg", 48.58, 7.75],
+    ["Bordeaux", 44.84, -0.58],
+    ["Montpellier", 43.61, 3.88],
+    ["Lille", 50.63, 3.06],
+    ["Rennes", 48.11, -1.67],
+    ["Reims", 49.27, 4.03],
+    ["Le Havre", 49.49, 0.11],
+    ["Saint-\u00c9tienne", 45.43, 4.39],
+    ["Toulon", 43.12, 5.93],
+    ["Angers", 47.47, -0.55],
+    ["Dijon", 47.31, 5.01],
+    ["Grenoble", 45.18, 5.71]
+  ],
+  "Germany": [
+    ["Berlin", 52.52, 13.41],
+    ["Hamburg", 53.55, 9.99],
+    ["Munich", 48.14, 11.58],
+    ["K\u00f6ln", 50.93, 6.95],
+    ["Frankfurt am Main", 50.12, 8.68]
+  ],
+  "Gibraltar": [
+    ["Gibraltar", 36.14, -5.35]
+  ],
+  "Greece": [
+    ["Athens", 37.98, 23.73],
+    ["Thessalon\u00edki", 40.64, 22.93],
+    ["P\u00e1tra", 38.25, 21.74],
+    ["L\u00e1risa", 39.63, 22.42]
+  ],
+  "Hungary": [
+    ["Budapest", 47.50, 19.04],
+    ["Debrecen", 47.53, 21.62],
+    ["Szeged", 46.25, 20.15],
+    ["Miskolc", 48.10, 20.78],
+    ["P\u00e9cs", 46.08, 18.23]
+  ],
+  "Iceland": [
+    ["Reykjav\u00edk", 64.14, -21.90],
+    ["Reykjanesb\u00e6r", 64.00, -22.56],
+    ["Akureyri", 65.68, -18.09]
+  ],
+  "Jersey": [
+    ["Saint Helier", 49.19, -2.11]
+  ],
+  "England": [
+    ["London", 51.51, -0.13],
+    ["Birmingham", 52.48, -1.90],
+    ["Manchester", 53.48, -2.24],
+    ["Sheffield", 53.38, -1.47],
+    ["Leeds", 53.80, -1.55]
+  ],
+  "Northern Ireland": [
+    ["Belfast", 54.60, -5.93],
+    ["Derry", 54.99, -7.32],
+    ["Lisburn", 54.52, -6.04],
+    ["Newry", 54.18, -6.34],
+    ["Craigavon", 54.45, -6.38]
+  ],
+  "Republic of Ireland": [
+    ["Dublin", 53.33, -6.25],
+    ["Cork", 51.90, -8.47],
+    ["Limerick", 52.66, -8.62],
+    ["Galway", 53.27, -9.05],
+    ["Waterford", 52.26, -7.11]
+  ],
+  "Italy": [
+    ["Rome", 41.89, 12.51],
+    ["Milan", 45.46, 9.19],
+    ["Naples", 40.85, 14.27],
+    ["Turin", 45.07, 7.69],
+    ["Palermo", 38.12, 13.36]
+  ],
+  "Kosovo": [
+    ["Pristina", 42.67, 21.17],
+    ["Prizren", 42.21, 20.74],
+    ["Mitrovic\u00eb", 42.88, 20.87],
+    ["Gjakov\u00eb", 42.38, 20.43],
+    ["Suva Reka", 42.36, 20.82]
+  ],
+  "Latvia": [
+    ["Riga", 56.95, 24.11],
+    ["Daugavpils", 55.88, 26.53],
+    ["Liep\u0101ja", 56.50, 21.01],
+    ["Jelgava", 56.65, 23.71],
+    ["J\u016brmala", 56.97, 23.77]
+  ],
+  "Liechtenstein": [
+    ["Schaan", 47.16, 9.51]
+  ],
+  "Lithuania": [
+    ["Vilnius", 54.69, 25.28],
+    ["Kaunas", 54.90, 23.91],
+    ["Klaip\u0117da", 55.71, 21.14],
+    ["\u0160iauliai", 55.93, 23.32],
+    ["Panev\u0117\u017eys", 55.73, 24.36]
+  ],
+  "Luxembourg": [
+    ["Luxembourg", 49.61, 6.13],
+    ["Esch-sur-Alzette", 49.50, 5.98]
+  ],
+  "Malta": [
+    ["San Pawl il-Ba\u0127ar", 35.95, 14.42]
+  ],
+  "Mexico - Aguascalientes": [
+    ["Aguascalientes", 21.88, -102.28],
+    ["Calvillo", 21.85, -102.72],
+    ["Cosío", 22.37, -102.30],
+    ["Las Negritas", 21.99, -101.88]
+  ],
+  "Mexico - Baja California": [
+    ["Tijuana", 32.50, -117.00],
+    ["Mexicali", 32.63, -115.45],
+    ["Ensenada", 31.87, -116.60],
+    ["Ciudad Guadalupe Victoria", 32.29, -115.10],
+    ["San Felipe", 31.03, -114.84]
+  ],
+  "Mexico - Baja California Sur": [
+    ["La Paz", 24.14, -110.31],
+    ["Cabo San Lucas", 22.89, -109.91],
+    ["Ciudad Constitución", 25.03, -111.66],
+    ["Loreto", 26.01, -111.35],
+    ["Guerrero Negro", 27.96, -114.06]
+  ],
+  "Mexico - Campeche": [
+    ["Campeche", 19.84, -90.52],
+    ["Ciudad del Carmen", 18.65, -91.83],
+    ["Champotón", 19.34, -90.72],
+    ["Escárcega", 18.61, -90.75],
+    ["Calkiní", 20.37, -90.05]
+  ],
+  "Mexico - CDMX": [
+    ["Mexico City", 19.43, -99.13]
+  ],
+  "Mexico - Chiapas": [
+    ["Tuxtla", 16.75, -93.12],
+    ["Tapachula", 14.91, -92.26],
+    ["San Cristóbal de las Casas", 16.73, -92.64],
+    ["Comitán", 16.24, -92.14],
+    ["Pijijiapan", 15.69, -93.21]
+  ],
+  "Mexico - Chihuahua": [
+    ["Ciudad Juárez", 31.72, -106.46],
+    ["Chihuahua", 28.64, -106.09],
+    ["Cuauhtémoc", 28.41, -106.87],
+    ["Ciudad Delicias", 28.19, -105.47],
+    ["Hidalgo del Parral", 26.93, -105.67]
+  ],
+  "Mexico - Coahuila": [
+    ["Torreón", 25.54, -103.42],
+    ["Saltillo", 25.43, -100.98],
+    ["Ciudad Acuña", 29.32, -100.95],
+    ["Monclova", 26.91, -101.42],
+    ["Piedras Negras", 28.70, -100.52]
+  ],
+  "Mexico - Colima": [
+    ["Manzanillo", 19.12, -104.34],
+    ["Colima", 19.24, -103.71],
+    ["Ciudad de Armería", 18.94, -103.96]
+  ],
+  "Mexico - Durango": [
+    ["Victoria de Durango", 24.02, -104.66],
+    ["Gómez Palacio", 25.57, -103.50],
+    ["Santiago Papasquiaro", 25.04, -105.42],
+    ["El Salto", 23.78, -105.36],
+    ["Pueblo Nuevo", 23.38, -105.37]
+  ],
+  "Mexico - Guanajuato": [
+    ["León de los Aldama", 21.12, -101.68],
+    ["Irapuato", 20.67, -101.36],
+    ["Celaya", 20.52, -100.81],
+    ["San Miguel de Allende", 20.92, -100.74],
+    ["Acámbaro", 20.03, -100.72]
+  ],
+  "Mexico - Guerrero": [
+    ["Acapulco de Juárez", 16.85, -99.91],
+    ["Chilpancingo", 17.55, -99.50],
+    ["Iguala de la Independencia", 18.35, -99.54],
+    ["Ixtapa-Zihuatanejo", 17.64, -101.55],
+    ["Tlapa de Comonfort", 17.55, -98.58]
+  ],
+  "Mexico - Hidalgo": [
+    ["Pachuca de Soto", 20.12, -98.73],
+    ["Tepeji del Río de Ocampo", 19.90, -99.34],
+    ["Huejutla de Reyes", 21.14, -98.42],
+    ["Ixmiquilpan", 20.48, -99.22],
+    ["Ciudad Sahagun", 19.78, -98.57]
+  ],
+  "Mexico - Jalisco": [
+    ["Zapopan", 20.72, -103.39],
+    ["Puerto Vallarta", 20.62, -105.23],
+    ["Ciudad Guzmán", 19.70, -103.46],
+    ["Lagos de Moreno", 21.36, -101.93],
+    ["Tepatitlán de Morelos", 20.82, -102.76]
+  ],
+  "Mexico - Estado de México": [
+    ["Ecatepec de Morelos", 19.60, -99.06],
+    ["Toluca", 19.29, -99.65],
+    ["Chalco", 19.26, -98.90],
+    ["Tejupilco de Hidalgo", 18.90, -100.15],
+    ["Atlacomulco de Fabela", 19.80, -99.88]
+  ],
+  "Mexico - Michoacán": [
+    ["Morelia", 19.70, -101.18],
+    ["Uruapan", 19.42, -102.06],
+    ["Ciudad Lázaro Cárdenas", 17.96, -102.20],
+    ["Zamora de Hidalgo", 19.98, -102.29],
+    ["Apatzingán", 19.09, -102.36]
+  ],
+  "Mexico - Morelos": [
+    ["Cuernavaca", 18.93, -99.23],
+    ["Axochiapan", 18.50, -98.75],
+    ["Tetela del Volcán", 18.89, -98.73],
+    ["Tehuixtla", 18.56, -99.27],
+    ["San Diego Linares", 19.39, -99.64]
+  ],
+  "Mexico - Nayarit": [
+    ["Tepic", 21.51, -104.89],
+    ["Ixtlán del Río", 21.04, -104.37],
+    ["San José del Valle", 20.76, -105.23],
+    ["Tuxpan", 21.94, -105.30],
+    ["Acaponeta", 22.49, -105.36]
+  ],
+  "Mexico - Nuevo León": [
+    ["Monterrey", 25.68, -100.32],
+    ["Linares", 24.86, -99.57],
+    ["Montemorelos", 25.19, -99.83],
+    ["Ciudad Sabinas Hidalgo", 26.50, -100.18],
+    ["Anáhuac", 27.24, -100.13]
+  ],
+  "Mexico - Oaxaca": [
+    ["Oaxaca", 17.06, -96.73],
+    ["Tuxtepec", 18.09, -96.13],
+    ["Heroica Ciudad de Juchitán de Zaragoza", 16.43, -95.02],
+    ["Ciudad de Huajuapan de León", 17.81, -97.78],
+    ["Puerto Escondido", 15.86, -97.07]
+  ],
+  "Mexico - Puebla": [
+    ["Puebla", 19.05, -98.21],
+    ["Tehuacán", 18.46, -97.40],
+    ["Teziutlan", 19.82, -97.36],
+    ["Huauchinango", 20.17, -98.05],
+    ["Izúcar de Matamoros", 18.60, -98.46]
+  ],
+  "Mexico - Querétaro": [
+    ["Santiago de Querétaro", 20.59, -100.39],
+    ["San Juan del Río", 20.39, -100.00],
+    ["Jalpan de Serra", 21.22, -99.47],
+    ["Colón", 20.78, -100.05],
+    ["Bella Vista del Río", 20.69, -99.57]
+  ],
+  "Mexico - Quintana Roo": [
+    ["Cancún", 21.17, -86.85],
+    ["Chetumal", 18.52, -88.30],
+    ["Playa del Carmen", 20.63, -87.08],
+    ["Felipe Carrillo Puerto", 19.58, -88.05],
+    ["Tulum", 20.21, -87.46]
+  ],
+  "Mexico - San Luis Potosí": [
+    ["San Luis Potosí", 22.15, -100.97],
+    ["Ciudad Valles", 22.00, -99.01],
+    ["Matehuala", 23.65, -100.64],
+    ["Rioverde", 21.93, -99.99],
+    ["Tamazunchale", 21.26, -98.79]
+  ],
+  "Mexico - Sinaloa": [
+    ["Culiacán", 24.80, -107.39],
+    ["Mazatlán", 23.22, -106.42],
+    ["Los Mochis", 25.79, -109.00],
+    ["Guamúchil", 25.46, -108.08],
+    ["Guasave", 25.57, -108.47]
+  ],
+  "Mexico - Sonora": [
+    ["Hermosillo", 29.09, -110.97],
+    ["Ciudad Obregón", 27.49, -109.94],
+    ["Nogales", 31.31, -110.94],
+    ["San Luis Río Colorado", 32.46, -114.77],
+    ["Heroica Guaymas", 27.92, -110.90]
+  ],
+  "Mexico - Tabasco": [
+    ["Villahermosa", 17.99, -92.94],
+    ["Cárdenas", 18.00, -93.38],
+    ["Paraiso", 18.40, -93.21],
+    ["Tenosique", 17.47, -91.42],
+    ["Macuspana", 17.76, -92.60]
+  ],
+  "Mexico - Tamaulipas": [
+    ["Reynosa", 26.08, -98.28],
+    ["Heroica Matamoros", 25.88, -97.50],
+    ["Nuevo Laredo", 27.48, -99.52],
+    ["Ciudad Victoria", 23.74, -99.14],
+    ["Tampico", 22.29, -97.88]
+  ],
+  "Mexico - Tlaxcala": [
+    ["Tlaxcala", 19.32, -98.24],
+    ["Calpulalpan", 19.59, -98.57],
+    ["Villa de El Carmen Tequexquitla", 19.32, -97.65]
+  ],
+  "Mexico - Veracruz": [
+    ["Veracruz", 19.18, -96.14],
+    ["Xalapa de Enríquez", 19.53, -96.92],
+    ["Coatzacoalcos", 18.15, -94.44],
+    ["Córdoba", 18.88, -96.93],
+    ["Poza Rica de Hidalgo", 20.53, -97.46]
+  ],
+  "Mexico - Yucatán": [
+    ["Mérida", 20.97, -89.62],
+    ["Valladolid", 20.69, -88.20],
+    ["Tizimín", 21.14, -88.15],
+    ["Ticul", 20.40, -89.53],
+    ["Peto", 20.13, -88.92]
+  ],
+  "Mexico - Zacatecas": [
+    ["Guadalupe", 22.75, -102.52],
+    ["Fresnillo", 23.17, -102.87],
+    ["Jerez de García Salinas", 22.65, -102.99],
+    ["Río Grande", 23.83, -103.03],
+    ["Loreto", 22.27, -101.99]
+  ],
+  "Monaco": [
+    ["Monaco", 43.74, 7.42]
+  ],
+  "Montenegro": [
+    ["Podgorica", 42.44, 19.26],
+    ["Nik\u0161i\u0107", 42.77, 18.94],
+    ["Herceg Novi", 42.45, 18.54],
+    ["Pljevlja", 43.36, 19.36],
+    ["Budva", 42.29, 18.84]
+  ],
+  "Netherlands": [
+    ["Rotterdam", 51.92, 4.48],
+    ["Amsterdam", 52.37, 4.89],
+    ["Utrecht", 52.09, 5.12],
+    ["Groningen", 53.22, 6.57],
+    ["Eindhoven", 51.44, 5.48],
+    ["Heerlen", 50.89, 5.98]
+  ],
+  "North Macedonia": [
+    ["Skopje", 42.00, 21.43],
+    ["Kumanovo", 42.13, 21.72],
+    ["Prilep", 41.35, 21.55],
+    ["Bitola", 41.03, 21.34]
+  ],
+  "Norway": [
+    ["Oslo", 59.91, 10.75],
+    ["Bergen", 60.39, 5.32],
+    ["Trondheim", 63.43, 10.40],
+    ["Stavanger", 58.97, 5.73],
+    ["Kristiansand", 58.15, 8.00]
+  ],
+  "Poland": [
+    ["Warsaw", 52.23, 21.01],
+    ["Krak\u00f3w", 50.06, 19.94],
+    ["Wroc\u0142aw", 51.10, 17.03],
+    ["\u0141\u00f3d\u017a", 51.77, 19.47],
+    ["Pozna\u0144", 52.41, 16.93]
+  ],
+  "Portugal": [
+    ["Lisbon", 38.73, -9.15],
+    ["Porto", 41.15, -8.61],
+    ["Braga", 41.55, -8.42],
+    ["Coimbra", 40.21, -8.42]
+  ],
+  "Romania": [
+    ["Bucharest", 44.43, 26.11],
+    ["Ia\u015fi", 47.17, 27.60],
+    ["Constan\u0163a", 44.18, 28.63],
+    ["Cluj-Napoca", 46.77, 23.60],
+    ["Bra\u015fov", 45.65, 25.61]
+  ],
+  "San Marino": [
+    ["Serravalle", 43.97, 12.48]
+  ],
+  "Serbia": [
+    ["Belgrade", 44.80, 20.47],
+    ["Ni\u0161", 43.32, 21.90],
+    ["Novi Sad", 45.25, 19.84],
+    ["Kragujevac", 44.02, 20.92]
+  ],
+  "Slovakia": [
+    ["Bratislava", 48.15, 17.11],
+    ["Ko\u0161ice", 48.71, 21.26],
+    ["Nitra", 48.31, 18.08],
+    ["Pre\u0161ov", 49.00, 21.24]
+  ],
+  "Slovenia": [
+    ["Ljubljana", 46.05, 14.51],
+    ["Maribor", 46.56, 15.65],
+    ["Celje", 46.23, 15.26],
+    ["Kranj", 46.24, 14.36],
+    ["Koper", 45.55, 13.73]
+  ],
+  "Spain": [
+    ["Madrid", 40.42, -3.70],
+    ["Barcelona", 41.39, 2.16],
+    ["Valencia", 39.47, -0.38],
+    ["Zaragoza", 41.66, -0.88],
+    ["Sevilla", 37.38, -5.97]
+  ],
+  "Sweden": [
+    ["Stockholm", 59.33, 18.07],
+    ["Gothenburg", 57.71, 11.97],
+    ["Malm\u00f6", 55.61, 13.00],
+    ["Uppsala", 59.86, 17.64],
+    ["Link\u00f6ping", 58.41, 15.62]
+  ],
+  "Switzerland": [
+    ["Z\u00fcrich", 47.37, 8.55],
+    ["Geneva", 46.20, 6.15],
+    ["Basel", 47.56, 7.57],
+    ["Lausanne", 46.52, 6.63],
+    ["Bern", 46.95, 7.45]
+  ],
+  "Scotland": [
+    ["Glasgow", 55.87, -4.26],
+    ["Edinburgh", 55.95, -3.19],
+    ["Aberdeen", 57.15, -2.10],
+    ["Dundee", 56.46, -2.97],
+    ["Inverness", 57.48, -4.22]
+  ],
+  "Wales": [
+    ["Cardiff", 51.48, -3.18],
+    ["Swansea", 51.62, -3.95],
+    ["Newport", 51.58, -2.99],
+    ["Wrexham", 53.05, -3.00],
+    ["Barry", 51.41, -3.27]
+  ],
+  "Vatican City": [
+    ["Vatican City", 41.90, 12.45]
+  ]
+}

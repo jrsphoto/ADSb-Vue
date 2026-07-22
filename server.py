@@ -218,14 +218,21 @@ def build_cones(points):
 
 
 def cities_file():
-    """Path to the cities.local.json actually in effect: the one on the data
-    volume wins (edit it live), then the one baked next to server.py, else None."""
+    """Path to the city-label file in effect, by precedence:
+      1. cities.local.json on the data volume  (edit it live to override)
+      2. cities.local.json baked next to server.py
+      3. cities.local.json.example  (the shipped comprehensive worldwide default,
+         so a fresh install shows nearby labels with no config)
+    ...or None if somehow none exist."""
+    candidates = []
     if DATA_DIR:
-        p = os.path.join(DATA_DIR, "cities.local.json")
+        candidates.append(os.path.join(DATA_DIR, "cities.local.json"))
+    candidates.append(os.path.join(HERE, "cities.local.json"))
+    candidates.append(os.path.join(HERE, "cities.local.json.example"))
+    for p in candidates:
         if os.path.exists(p):
             return p
-    p = os.path.join(HERE, "cities.local.json")
-    return p if os.path.exists(p) else None
+    return None
 
 
 _hwt = {"bytes": None, "fail_ts": 0.0}

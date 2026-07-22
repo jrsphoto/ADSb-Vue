@@ -141,15 +141,17 @@ variable always overrides the file. Restart the process to pick up changes.
 
 ## Customizing the map
 
-State borders and lakes are drawn automatically and the home state(s) are
-highlighted based on your receiver's position — no editing needed.
+Country and state/province **borders** and lakes are drawn automatically for
+wherever your receiver is — worldwide, not just the US — with your home
+country/state highlighted based on your position. No editing needed.
 
-The labelled **cities** default to a short upper-Midwest US example. To use your
-own, put a git-ignored `cities.local.json` where the app can see it (a JSON array
-of `[ "label", lat, lon ]` entries — start from `cities.local.json.example`).
-The server serves it at `/cities`; only entries within range of the receiver are
-drawn; absent, the built-in defaults are used. Where it lives depends on how you
-run:
+The labelled **cities** ship with a comprehensive worldwide default
+(`cities.local.json.example`), so a fresh install shows the cities near *your*
+receiver out of the box — no configuration. Only entries within range are drawn,
+so the rest cost nothing. To use your own list instead, put a git-ignored
+`cities.local.json` where the app can see it (JSON `[ "label", lat, lon ]` entries,
+or the grouped form below — start from the example). It's served at `/cities` and
+overrides the default. Where it lives depends on how you run:
 
 - **With a `data/` volume (recommended — required for the prebuilt image):** the
   file lives at `data/cities.local.json`. Edit it and reload the page — no

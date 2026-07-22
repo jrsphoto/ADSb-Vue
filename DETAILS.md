@@ -252,17 +252,26 @@ mid-sweep. Feature-detected; the button disables where `MediaRecorder` /
 
 ### Geography
 
-`loadStateMap()` draws state borders, auto-highlighting the **home state(s)** by
-point-in-polygon of the receiver against the state shapes (plus any border within
-~35 nm), so it's correct at any deployment with no hardcoded list. It also draws
-Natural Earth lakes within range and a labelled city list: the built-in
-`DEFAULT_CITIES`, overridden by whatever `GET /cities` returns (a git-ignored
-`cities.local.json`), so a deployment keeps its own labels across updates without
-editing the tracked page. `flattenCities()` accepts either a flat
-`[["City",lat,lon],...]` list or a grouped `{ "Group": [...], ... }` object (group
-keys are for tidiness only — flattened for display) and drops malformed rows.
-Border colours come from `border_color` / `home_border_color`; labels beyond
-~500 nm are culled.
+`loadStateMap()` draws borders worldwide, each layer culled to the receiver's
+region by a bounding-box test (`featureNearReceiver`) so only nearby features are
+built:
+- **US states** from us-atlas (highest quality for the US), home-highlighted by
+  point-in-polygon of the receiver against the state shapes (plus any border
+  within ~35 nm).
+- **Country borders** from Natural Earth `admin_0` (50m via jsDelivr), so a
+  receiver anywhere gets national context; home country highlighted the same way.
+- **Province/state borders** from Natural Earth `admin_1` lines (50m) — US skipped
+  here since us-atlas already owns it — for sub-national context outside the US.
+
+Plus Natural Earth lakes within range and a labelled city list: the built-in
+`DEFAULT_CITIES` is the last-resort fallback, but in practice `GET /cities`
+returns the shipped comprehensive worldwide default (`cities.local.json.example`),
+overridable by a `cities.local.json` on the data volume or next to `server.py`.
+`flattenCities()` accepts either a flat `[["City",lat,lon],...]` list or a grouped
+`{ "Group": [...], ... }` object (group keys are for tidiness only — flattened for
+display) and drops malformed rows. Border colours come from `border_color` /
+`home_border_color`; labels beyond ~500 nm are culled. `textSprite` sizes each
+label canvas to the measured text so labels stay crisp and proportioned.
 
 ### Terrain — the predicted-horizon model
 
