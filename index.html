@@ -399,6 +399,7 @@ let preparing = false;       // building cone frames — block re-entry
 let recording = false;       // export in progress
 let exportRangeHours = 0;    // 0=all; else last N hours ending at tMax (persisted)
 let exportWindowFrom = null; // during a windowed recording, epoch seconds; else null
+let exportAbort = null;      // Esc handler calls this to cancel an in-flight recording
 
 // Push the current Solidity value onto the live geometry without a rebuild.
 // Roles are tagged on each material so fill/surface, wireframe and points each
@@ -1216,20 +1217,24 @@ async function exportClip() {
   const stopped = new Promise(res => { rec.onstop = res; });
   const prevAuto = controls.autoRotate, prevSpeed = controls.autoRotateSpeed;
   controls.autoRotate = true; controls.autoRotateSpeed = 0.6;   // gentle orbit for the clip
-  btn.textContent = '● recording…';
+  btn.textContent = '● recording… (Esc to cancel)';
+  let cancelled = false;
   try {
     rec.start(100);
-    // Resolve on natural end, or a wall-clock safety cap so the recorder can't
-    // hang if the tab is backgrounded mid-capture (rAF — and the sweep — pause).
+    // Resolve on natural end, an Esc cancel, or a wall-clock safety cap so the
+    // recorder can't hang if the tab is backgrounded mid-capture (rAF — and
+    // the sweep — pause).
     const cap = SWEEP_MS / playSpeed + 6000;
     await new Promise(res => {
       let done = false;
       const finish = () => { if (!done) { done = true; res(); } };
+      exportAbort = () => { cancelled = true; finish(); };
       startPlayback({ loop: false, onEnd: finish });
       setTimeout(finish, cap);
     });
-    await new Promise(r => setTimeout(r, 500));   // hold the completed coverage a beat
+    if (!cancelled) await new Promise(r => setTimeout(r, 500));   // hold the final frame a beat
   } finally {
+    exportAbort = null;
     if (reveal || playing) stopPlayback(playCut, true);
     if (rec.state !== 'inactive') rec.stop();
     await stopped;
@@ -1237,13 +1242,15 @@ async function exportClip() {
     controls.autoRotate = prevAuto; controls.autoRotateSpeed = prevSpeed;
     exportWindowFrom = null;   // restore normal (live/static) behaviour
   }
-  const blob = new Blob(chunks, { type: 'video/webm' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'adsbvue-coverage-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.webm';
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  if (!cancelled) {
+    const blob = new Blob(chunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'adsbvue-coverage-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.webm';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
   recording = false; btn.disabled = false; document.getElementById('tlPlay').disabled = false;
   btn.innerHTML = '&#9210; Export';
 }
@@ -1362,7 +1369,12 @@ function wireUI() {
   document.getElementById('helpBtn').addEventListener('click', openHelp);
   document.getElementById('helpClose').addEventListener('click', closeHelp);
   help.addEventListener('click', e => { if (e.target === help) closeHelp(); });
-  addEventListener('keydown', e => { if (e.key === 'Escape') { closeHelp(); closeExportModal(); if (profileOpen) closeProfile(); } });
+  addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (exportAbort) { exportAbort(); return; }   // cancel an in-flight recording
+    closeHelp(); closeExportModal();
+    if (profileOpen) closeProfile();
+  });
 
   // Bearing profile: button opens it; slider or a map-click picks the direction.
   document.getElementById('profileBtn').addEventListener('click', openProfile);

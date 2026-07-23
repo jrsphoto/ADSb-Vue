@@ -38,10 +38,19 @@ given moment, or press ▶ to sweep the whole window — all three render modes
 animate the coverage filling in. **Loop** repeats the sweep and the **speed**
 button (0.5–4×) sets how fast it runs.
 
-**⏺ Export** records a play-through to a WebM file for sharing. The clip has a
-burned-in **date/time** stamp of the moment each frame represents, a progress bar,
-and a slow camera orbit while recording. (Recording needs a Chromium- or
-Firefox-based browser.)
+**Heads up:** this is a **coverage envelope** of received ADS-B signal over the
+window — *not* traffic during the window. Points only ever appear as they were
+first heard; they don't fade or move. Even a single ping at 3am shows the same
+as steady traffic. Think phosphor screen, not radar sweep.
+
+**⏺ Export** records a play-through to a WebM file for sharing. Clicking it
+opens a small dialog where you can pick how much recent history the clip
+covers — **6h · 12h · 24h · 48h · all** — and it tells you how many hours
+are actually stored (so a 24h choice against 6h of data still records the 6h
+you have). The clip has a burned-in **date/time** stamp of the moment each
+frame represents, a progress bar, and a slow camera orbit while recording.
+Press **Esc** to cancel a recording in progress. (Recording needs a Chromium-
+or Firefox-based browser.)
 
 How far back the window reaches is set by `ADSB_MAX_CHUNKS` — bigger is more
 history (`0` = everything the feeder retains). With **persistence** enabled
