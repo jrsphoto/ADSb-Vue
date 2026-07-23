@@ -117,6 +117,33 @@ input[type=range]::-moz-range-thumb {
 }
 #helpClose:hover { border-color: #2a5a7a; color: #b0cee0; }
 
+/* --- Export range modal --- */
+#exportOverlay {
+  position: fixed; inset: 0; z-index: 50; display: none;
+  align-items: center; justify-content: center; padding: 16px;
+  background: rgba(3,6,11,0.72); backdrop-filter: blur(3px);
+}
+#exportOverlay.open { display: flex; }
+#exportCard {
+  position: relative; background: #0a1119; border: 1px solid #14324a;
+  border-radius: 10px; width: 100%; max-width: 380px;
+  padding: 18px 20px 16px; color: #6a9ab4; font-size: 12px; line-height: 1.5;
+}
+#exportCard h2 { font-size: 13px; color: #b0cee0; letter-spacing: 0.4px; margin-bottom: 4px; padding-right: 24px; }
+#exportCard .avail { color: #5a86a0; font-size: 11px; margin-bottom: 12px; }
+#exportCard .ranges { display: flex; gap: 6px; flex-wrap: wrap; }
+#exportCard .ranges button { flex: 1 1 auto; min-width: 48px; justify-content: center; }
+#exportCard .note { font-size: 10.5px; color: #c68f4e; min-height: 15px; margin: 8px 0 10px; }
+#exportCard .actions { display: flex; gap: 8px; }
+#exportCard .actions button { flex: 1 1 auto; justify-content: center; }
+#exportClose {
+  position: absolute; top: 10px; right: 10px; width: 26px; height: 26px;
+  border-radius: 6px; border: 1px solid #1a3a54; background: transparent;
+  color: #7aaecc; font-size: 13px; cursor: pointer; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+#exportClose:hover { border-color: #2a5a7a; color: #b0cee0; }
+
 /* --- M3 per-bearing profile (bottom drawer) --- */
 #profilePanel {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: none;
@@ -325,6 +352,26 @@ input[type=range]::-moz-range-thumb {
   </div>
 </div>
 
+<div id="exportOverlay">
+  <div id="exportCard">
+    <button id="exportClose" aria-label="Close">&#10005;</button>
+    <h2>Export range</h2>
+    <div class="avail" id="exportAvail">&mdash; hours of data available</div>
+    <div class="ranges" id="exportRanges">
+      <button class="view" data-hours="6">6h</button>
+      <button class="view" data-hours="12">12h</button>
+      <button class="view" data-hours="24">24h</button>
+      <button class="view" data-hours="48">48h</button>
+      <button class="view" data-hours="0">all</button>
+    </div>
+    <div class="note" id="exportNote"></div>
+    <div class="actions">
+      <button class="view" id="exportCancel">Cancel</button>
+      <button class="view" id="exportRecord" style="border-color:#0e3050">&#9679; Record</button>
+    </div>
+  </div>
+</div>
+
 <script type="module">
 import * as THREE from 'https://esm.sh/three@0.152.2';
 import { OrbitControls } from 'https://esm.sh/three@0.152.2/examples/jsm/controls/OrbitControls.js';
@@ -350,6 +397,8 @@ let playSpeed = 1;           // 0.5 / 1 / 2 / 4 — window sweeps per SWEEP_MS
 let reveal = null;           // active playback reveal object (per-mode) or null
 let preparing = false;       // building cone frames — block re-entry
 let recording = false;       // export in progress
+let exportRangeHours = 0;    // 0=all; else last N hours ending at tMax (persisted)
+let exportWindowFrom = null; // during a windowed recording, epoch seconds; else null
 
 // Push the current Solidity value onto the live geometry without a rebuild.
 // Roles are tagged on each material so fill/surface, wireframe and points each
@@ -397,13 +446,22 @@ function bandOf(a) {
 function activePoints() {
   // altitude-band filter, plus the timeline reveal: when the scrubber is pulled
   // back from the end, show only points first heard at or before playCut.
+  // exportWindowFrom (set only during a windowed export) also drops points
+  // first heard before the export window's start.
   const timeOn = tMax > tMin && playCut < tMax;
-  return DATA.points.filter(p => bands[bandOf(p[2])] && (!timeOn || p[3] <= playCut));
+  const wf = exportWindowFrom;
+  return DATA.points.filter(p =>
+    bands[bandOf(p[2])]
+    && (wf === null || (p[3] || 0) >= wf)
+    && (!timeOn || p[3] <= playCut));
 }
-// Band filter only (all times). The playback reveal engines take the full set
-// and cut it by time themselves (draw-range / instance-count / frame index).
+// Band filter only (all times, respecting the export window if set). Reveal
+// engines take this set and cut it by time themselves (draw-range /
+// instance-count / frame index).
 function activePointsByBand() {
-  return DATA.points.filter(p => bands[bandOf(p[2])]);
+  const wf = exportWindowFrom;
+  return DATA.points.filter(p =>
+    bands[bandOf(p[2])] && (wf === null || (p[3] || 0) >= wf));
 }
 // Count of sorted values <= x — the reveal cut for draw-range / instance-count.
 function upperBound(arr, x) {
@@ -678,6 +736,7 @@ function saveSettings() {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify({
         mode, opacity: displayOpacity, smoothing, bands, loop: loopOn, speed: playSpeed,
+        exportRangeHours,
         cam: camera && { p: camera.position.toArray(), t: controls.target.toArray(), u: camera.up.toArray() },
       }));
     } catch (e) { /* storage disabled / full / private mode — silently skip */ }
@@ -692,6 +751,7 @@ function applySavedState(s) {
   if (s.bands) for (const k in bands) if (k in s.bands) bands[k] = !!s.bands[k];
   if (typeof s.loop === 'boolean') loopOn = s.loop;
   if (typeof s.speed === 'number') playSpeed = s.speed;
+  if (typeof s.exportRangeHours === 'number') exportRangeHours = s.exportRangeHours;
 }
 // Sync the DOM controls to the current module state (call after wireUI).
 function applySettingsToUI() {
@@ -974,10 +1034,11 @@ function buildVoxelsReveal(pts) {
 function coneFrameCount(n) { return n > 260000 ? 44 : 60; }
 async function buildConeReveal(pts, onProgress) {
   const group = new THREE.Group();
-  const F = coneFrameCount(pts.length), span = tMax - tMin;
+  const from = exportWindowFrom !== null ? exportWindowFrom : tMin;
+  const F = coneFrameCount(pts.length), span = tMax - from;
   const frames = [];
   for (let i = 0; i < F; i++) {
-    const cut = tMin + (span * i) / (F - 1);
+    const cut = from + (span * i) / (F - 1);
     const fg = buildShell(pts.filter(p => (p[3]||0) <= cut));
     fg.visible = false; group.add(fg); frames.push(fg);
     if (onProgress) onProgress((i + 1) / F);
@@ -985,14 +1046,15 @@ async function buildConeReveal(pts, onProgress) {
   }
   let curr = -1;
   return { group, set(cut) {
-    const idx = Math.max(0, Math.min(F - 1, Math.round(((cut - tMin) / span) * (F - 1))));
+    const idx = Math.max(0, Math.min(F - 1, Math.round(((cut - from) / span) * (F - 1))));
     if (idx !== curr) { if (curr >= 0) frames[curr].visible = false; frames[idx].visible = true; curr = idx; }
   } };
 }
 
 // ---- playback control ------------------------------------------------------
 async function startPlayback(opts = {}) {
-  if (reveal || preparing || tMax <= tMin) return;
+  const winFrom = exportWindowFrom !== null ? exportWindowFrom : tMin;
+  if (reveal || preparing || tMax <= winFrom) return;
   const playBtn = document.getElementById('tlPlay');
   const pts = activePointsByBand();
   let rev;
@@ -1010,17 +1072,17 @@ async function startPlayback(opts = {}) {
   modeGroup = rev.group; scene.add(modeGroup); applyOpacity();
   reveal = rev; reveal.loopFixed = opts.loop;   // undefined -> follow live loopOn
   playing = true; playBtn.innerHTML = '&#10073;&#10073;';   // ‖
-  playCut = tMin; reveal.set(playCut); setScrub(); timelineLabel();
+  playCut = winFrom; reveal.set(playCut); setScrub(); timelineLabel();
 
   let last = 0;
   function step(ts) {
     if (!reveal || !playing) return;
     const dt = last ? ts - last : 16; last = ts;
-    playCut = Math.min(tMax, playCut + (tMax - tMin) * (dt / (SWEEP_MS / playSpeed)));
+    playCut = Math.min(tMax, playCut + (tMax - winFrom) * (dt / (SWEEP_MS / playSpeed)));
     reveal.set(playCut); setScrub(); timelineLabel();
     if (playCut >= tMax) {
       const loop = reveal.loopFixed !== undefined ? reveal.loopFixed : loopOn;
-      if (loop) { playCut = tMin; last = 0; requestAnimationFrame(step); }
+      if (loop) { playCut = winFrom; last = 0; requestAnimationFrame(step); }
       else { stopPlayback(tMax); if (opts.onEnd) opts.onEnd(); }
       return;
     }
@@ -1067,7 +1129,8 @@ function drawExportOverlay(ctx, w, h) {
   const dt = new Date(playCut * 1000);
   const stamp = dt.toLocaleDateString([], { year: 'numeric', month: 'short', day: '2-digit' })
               + '  ' + dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const frac = tMax > tMin ? Math.min(1, Math.max(0, (playCut - tMin) / (tMax - tMin))) : 1;
+  const from = exportWindowFrom !== null ? exportWindowFrom : tMin;
+  const frac = tMax > from ? Math.min(1, Math.max(0, (playCut - from) / (tMax - from))) : 1;
   const pad = Math.round(h * 0.022);
   const fs = Math.max(13, Math.round(h * 0.030));
   const barH = Math.max(2, Math.round(h * 0.004));
@@ -1087,11 +1150,48 @@ function drawExportOverlay(ctx, w, h) {
   ctx.fillStyle = '#3f6f8c'; ctx.fillText(brand, w - ctx.measureText(brand).width - pad, y);
   ctx.restore();
 }
+// Export range modal: picks how much recent history the clip covers. Ranges
+// end at tMax (end of available data), not wall-clock, so a paused / off-live
+// snapshot behaves the same as live. 0 = the full window (current default).
+function refreshExportModal() {
+  const availH = tMax > tMin ? (tMax - tMin) / 3600 : 0;
+  document.getElementById('exportAvail').textContent =
+    availH > 0 ? availH.toFixed(1) + ' hours of data available' : 'no data available yet';
+  document.querySelectorAll('#exportRanges button').forEach(b =>
+    b.classList.toggle('on', Number(b.dataset.hours) === exportRangeHours));
+  const note = document.getElementById('exportNote');
+  if (exportRangeHours > 0 && availH > 0 && exportRangeHours > availH) {
+    note.textContent = 'Only ' + availH.toFixed(1) + ' hours available — export will cover that.';
+  } else {
+    note.textContent = '';
+  }
+  const rec = document.getElementById('exportRecord');
+  rec.disabled = !(availH > 0);
+}
+function openExportModal() {
+  if (recording || preparing) return;
+  if (!exportSupported()) {
+    const btn = document.getElementById('tlExport');
+    btn.textContent = '✕ unsupported'; return;
+  }
+  refreshExportModal();
+  document.getElementById('exportOverlay').classList.add('open');
+}
+function closeExportModal() {
+  document.getElementById('exportOverlay').classList.remove('open');
+}
 async function exportClip() {
   const btn = document.getElementById('tlExport');
   if (recording || preparing) return;
   if (!exportSupported()) { btn.textContent = '✕ unsupported'; return; }
-  recording = true; endPlaybackForEdit();
+  recording = true;
+  // Windowed export: clamp requested hours to available data. 0 = full window.
+  if (exportRangeHours > 0 && tMax > tMin) {
+    exportWindowFrom = Math.max(tMin, tMax - exportRangeHours * 3600);
+  } else {
+    exportWindowFrom = null;
+  }
+  endPlaybackForEdit();
   btn.disabled = true; document.getElementById('tlPlay').disabled = true;
   // Composite the WebGL canvas + timestamp overlay into a 2D canvas and record
   // that, so the stamp is burned into the file.
@@ -1135,6 +1235,7 @@ async function exportClip() {
     await stopped;
     compositing = false;
     controls.autoRotate = prevAuto; controls.autoRotateSpeed = prevSpeed;
+    exportWindowFrom = null;   // restore normal (live/static) behaviour
   }
   const blob = new Blob(chunks, { type: 'video/webm' });
   const url = URL.createObjectURL(blob);
@@ -1223,10 +1324,24 @@ function wireUI() {
     speedBtn.innerHTML = playSpeed + '&times;';
     saveSettings();
   });
-  // Export a WebM clip of the play-through.
+  // Export: click opens the range-picker modal; Record starts the actual clip.
   const exportBtn = document.getElementById('tlExport');
-  if (exportSupported()) exportBtn.addEventListener('click', exportClip);
+  if (exportSupported()) exportBtn.addEventListener('click', openExportModal);
   else { exportBtn.disabled = true; exportBtn.title = 'Recording needs a Chromium/Firefox browser'; }
+  document.querySelectorAll('#exportRanges button').forEach(b => {
+    b.addEventListener('click', () => {
+      exportRangeHours = Number(b.dataset.hours) || 0;
+      refreshExportModal();
+      saveSettings();
+    });
+  });
+  const exportOverlay = document.getElementById('exportOverlay');
+  document.getElementById('exportClose').addEventListener('click', closeExportModal);
+  document.getElementById('exportCancel').addEventListener('click', closeExportModal);
+  document.getElementById('exportRecord').addEventListener('click', () => {
+    closeExportModal(); exportClip();
+  });
+  exportOverlay.addEventListener('click', e => { if (e.target === exportOverlay) closeExportModal(); });
 
   document.querySelectorAll('button[data-band]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1247,7 +1362,7 @@ function wireUI() {
   document.getElementById('helpBtn').addEventListener('click', openHelp);
   document.getElementById('helpClose').addEventListener('click', closeHelp);
   help.addEventListener('click', e => { if (e.target === help) closeHelp(); });
-  addEventListener('keydown', e => { if (e.key === 'Escape') { closeHelp(); if (profileOpen) closeProfile(); } });
+  addEventListener('keydown', e => { if (e.key === 'Escape') { closeHelp(); closeExportModal(); if (profileOpen) closeProfile(); } });
 
   // Bearing profile: button opens it; slider or a map-click picks the direction.
   document.getElementById('profileBtn').addEventListener('click', openProfile);
