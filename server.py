@@ -27,6 +27,13 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_LOW_ALT_FT    "low altitude" threshold for the cone stat, ft (default 10000)
   ADSB_FETCH_WORKERS parallel chunk downloads (default 8; 1 = serial)
   ADSB_ANTENNA_AGL_FT antenna height above ground, ft (default 30; terrain LOS model)
+  ADSB_ANTENNA_ELEV_FT ground elevation of the receiver site, ft MSL (default 0).
+                     Used with ADSB_ANTENNA_AGL_FT for the LOS filter below.
+  ADSB_LOS_FILTER    drop observations whose distance exceeds the 4/3-earth
+                     line-of-sight range for the reported altitude (default off).
+                     Useful when the upstream decoder occasionally accepts weak
+                     signals with bit-corrupted altitude fields — physically
+                     impossible far low-altitude cells get rejected at ingest.
   ADSB_BORDER_COLOR  state border colour, hex (default #3f82b8)
   ADSB_HOME_BORDER_COLOR  home-state border colour, hex (default #6fd6c0)
   ADSB_FOG_DENSITY   distance-fade density (default 0.0012; 0 disables it)
@@ -99,6 +106,13 @@ FETCH_WORKERS = int(os.environ.get("ADSB_FETCH_WORKERS", "8"))   # parallel chun
 ANTENNA_AGL_FT = float(os.environ.get("ADSB_ANTENNA_AGL_FT", "30"))  # antenna height above ground
                                                                  # (mast); feeds the terrain
                                                                  # line-of-sight horizon model
+ANTENNA_ELEV_FT = float(os.environ.get("ADSB_ANTENNA_ELEV_FT", "0"))  # ground elev of the site
+                                                                 # (ft MSL); + AGL for the LOS filter
+LOS_FILTER = os.environ.get("ADSB_LOS_FILTER", "false").lower() in ("1", "true", "yes", "on")
+# 4/3-earth line-of-sight: max_nm = 1.23 * (sqrt(alt_ft) + sqrt(antenna_MSL_ft)) * 1.15.
+# Precompute the constant terms so the per-observation check is one sqrt + one multiply-add.
+_LOS_K = 1.23 * 1.15                                             # ≈ 1.4145
+_LOS_ANT_TERM = _LOS_K * math.sqrt(max(0.0, ANTENNA_ELEV_FT + ANTENNA_AGL_FT))
 # --- appearance (passed through to the page) ---
 BORDER_COLOR = os.environ.get("ADSB_BORDER_COLOR", "#3f82b8")        # state borders
 HOME_BORDER_COLOR = os.environ.get("ADSB_HOME_BORDER_COLOR", "#6fd6c0")  # home state(s), highlighted
@@ -381,6 +395,12 @@ def build_points():
                     continue
                 brg, dist = bearing_distance(sin1, cos1, rlat_r, rlon_r, lat, lon)
                 if dist > MAX_RANGE_NM:   # discard obvious bad positions
+                    continue
+                # Optional 4/3-earth LOS filter: an aircraft at `alt` can't be heard
+                # farther than 1.23 * (sqrt(alt) + sqrt(antenna_MSL)) * 1.15 nm.
+                # Weak decodes with bit-corrupted altitude fields land in low bins at
+                # physically impossible distances — this rejects them at ingest.
+                if LOS_FILTER and dist > _LOS_K * math.sqrt(max(0.0, alt)) + _LOS_ANT_TERM:
                     continue
                 cells[key] = [round(brg, 1), round(dist, 2), int(alt), now_i, now_i]
 

@@ -12,6 +12,10 @@ It reads tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
 `chunk_*.gz`), converts every aircraft observation to bearing / distance /
 altitude relative to the receiver, and serves a self-contained Three.js page.
 
+> For a practical guide to using it as a diagnostic tool — antenna placement,
+> reception troubleshooting, before/after comparisons — see
+> **[BEST_PRACTICES.md](BEST_PRACTICES.md)**.
+>
 > For a more in-depth description of how the Python server and the Three.js
 > frontend actually work, see **[DETAILS.md](DETAILS.md)**.
 
@@ -86,6 +90,8 @@ environment variables:
 | `ADSB_FETCH_WORKERS`| `8`                 | Parallel chunk downloads (1 = serial; higher helps a remote feeder) |
 | `ADSB_CACHE_SECS`  | `120`                | Seconds to cache parsed observations      |
 | `ADSB_ANTENNA_AGL_FT`| `30`               | Antenna height above ground (ft) for the terrain horizon model |
+| `ADSB_ANTENNA_ELEV_FT`| `0`                | Site ground elevation (ft MSL); only used by the LOS filter below |
+| `ADSB_LOS_FILTER`  | `false`              | Drop observations whose distance exceeds the 4/3-earth line-of-sight range for their altitude — filters out bit-corrupted-altitude decodes at ingest |
 | `ADSB_BORDER_COLOR`| `#3f82b8`            | State border colour (hex)                 |
 | `ADSB_HOME_BORDER_COLOR`| `#6fd6c0`       | Home-state border colour (hex)            |
 | `ADSB_FOG_DENSITY` | `0.0012`             | Distance-fade density; `0` disables the fade |
