@@ -3,12 +3,18 @@
 ADSb-Vue — a standalone 3D volumetric antenna-reception viewer for an
 Ultrafeeder / tar1090 ADS-B receiver.
 
-It reads tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
-`chunk_*.gz`, which are gzip-compressed JSON), converts every aircraft
-observation to (bearing, distance, altitude) relative to the receiver, and
-serves both the raw point stream and a self-contained Three.js page that can
-render it as a point cloud, a density voxel volume, or a coverage-envelope
-shell.
+It converts every aircraft observation to (bearing, distance, altitude)
+relative to the receiver and serves both the raw point stream and a
+self-contained Three.js page that can render it as a point cloud, a density
+voxel volume, or a coverage-envelope shell.
+
+Observations come from one of two sources, selected by ADSB_INGEST:
+  chunks  tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
+          `chunk_*.gz`, gzip-compressed JSON), re-read on demand. Carries its
+          own history, so a cold start is instantly populated.
+  poll    a background thread reading `/data/aircraft.json` on a fixed
+          interval. No history, but it works against dump1090-fa as well as
+          tar1090 and its resolution does not depend on the feeder's config.
 
 Zero third-party dependencies — Python 3 standard library only.
 
@@ -20,6 +26,11 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_WEB_PORT      web-UI port to listen on (default 24556; alias: ADSB_PORT).
                      NOT a data port — the ADS-B source is the URL in ADSB_ULTRAFEEDER
   ADSB_CACHE_SECS    seconds to cache parsed points (default 120)
+  ADSB_INGEST        where observations come from: chunks | poll | both
+                     (default chunks, the long-standing behaviour)
+  ADSB_POLL_SECS     poll mode: seconds between aircraft.json reads (default 5)
+  ADSB_FLUSH_SECS    poll mode: seconds between batched writes to the store
+                     (default 60)
   ADSB_MAX_CHUNKS    cap number of chunks read, newest-first (default 48, 0 = all)
   ADSB_CELL_NM       de-dup grid cell size, nm   (default 1.5)
   ADSB_ALT_BIN_FT    de-dup altitude bin, ft     (default 1000)
@@ -51,6 +62,7 @@ import gzip
 import json
 import math
 import os
+import signal
 import sqlite3
 import sys
 import threading
@@ -97,6 +109,24 @@ ULTRAFEEDER = os.environ.get("ADSB_ULTRAFEEDER", "http://127.0.0.1").rstrip("/")
 # name; ADSB_PORT is still honoured for back-compat.
 PORT = int(os.environ.get("ADSB_WEB_PORT", os.environ.get("ADSB_PORT", "24556")))
 CACHE_SECS = int(os.environ.get("ADSB_CACHE_SECS", "120"))
+# --- ingest source ---
+# "chunks" replays tar1090 history on demand; "poll" runs a background thread
+# reading aircraft.json; "both" seeds from history and keeps polling. Default is
+# "chunks" so an upgrade changes nothing until a site opts in.
+INGEST = os.environ.get("ADSB_INGEST", "chunks").strip().lower()
+if INGEST not in ("chunks", "poll", "both"):
+    sys.stderr.write("ADSB_INGEST=%r not one of chunks|poll|both; using chunks\n" % INGEST)
+    INGEST = "chunks"
+# Poll interval. An aircraft at 500 kt covers 0.139 nm/s, so a cell of CELL_NM is
+# crossed in CELL_NM / 0.139 seconds. Polling faster than that only re-reads
+# positions that de-dup into a cell already recorded. 5 s suits the 1.0-1.5 nm
+# cell sizes people actually run; raise it for a coarser grid or a busy Pi.
+POLL_SECS = float(os.environ.get("ADSB_POLL_SECS", "5"))
+# Write batching. Polls accumulate in memory and land in SQLite every
+# FLUSH_SECS, which at the defaults is ~12x fewer transactions than writing per
+# poll, which is worth doing on a Pi's SD card. An unclean shutdown loses at
+# most this many seconds of coverage, nothing for a map that builds over days.
+FLUSH_SECS = float(os.environ.get("ADSB_FLUSH_SECS", "60"))
 MAX_CHUNKS = int(os.environ.get("ADSB_MAX_CHUNKS", "48"))         # newest-first, 0=all
 CELL_NM = float(os.environ.get("ADSB_CELL_NM", "1.5"))           # de-dup cell size (nm)
 ALT_BIN_FT = float(os.environ.get("ADSB_ALT_BIN_FT", "1000"))    # de-dup alt bin (ft)
@@ -138,7 +168,8 @@ GZIP_MIN_BYTES = 1400       # ~one MTU; not worth the CPU to compress smaller re
 # internal accumulator (used to merge/retain in the persistent store).
 BRG, DIST, ALT, FIRST_SEEN, LAST_SEEN = 0, 1, 2, 3, 4
 
-_recv = {"lat": None, "lon": None}
+_recv = {"pos": None}            # (lat, lon) once resolved; one tuple, so a reader
+_recv_lock = threading.Lock()    # never sees a half-written pair (poller + requests)
 # data = parsed dict; json/gz = payload serialized once per rebuild (see _ensure)
 _cache = {"ts": 0.0, "data": None, "json": None, "gz": None}
 _cache_lock = threading.Lock()   # guards the (fast) cache read/write only
@@ -163,16 +194,30 @@ def _load_chunk(name):
 
 def receiver():
     """Receiver lat/lon: env override, else tar1090 /data/receiver.json."""
-    if _recv["lat"] is not None:
-        return _recv["lat"], _recv["lon"]
+    pos = _recv["pos"]
+    if pos is not None:
+        return pos
     lat = os.environ.get("ADSB_RECV_LAT")
     lon = os.environ.get("ADSB_RECV_LON")
     if lat and lon:
-        _recv["lat"], _recv["lon"] = float(lat), float(lon)
-        return _recv["lat"], _recv["lon"]
-    rj = _fetch_json(ULTRAFEEDER + "/data/receiver.json")
-    _recv["lat"], _recv["lon"] = float(rj["lat"]), float(rj["lon"])
-    return _recv["lat"], _recv["lon"]
+        pos = (float(lat), float(lon))
+    else:
+        rj = _fetch_json(ULTRAFEEDER + "/data/receiver.json")
+        pos = (float(rj["lat"]), float(rj["lon"]))
+    with _recv_lock:
+        _recv["pos"] = pos
+    return pos
+
+
+def receiver_trig():
+    """Receiver position plus the trig terms every conversion needs.
+
+    sin/cos of the receiver latitude and its lat/lon in radians are constant for
+    a run, so they're computed here once per ingest pass rather than per row.
+    """
+    rlat, rlon = receiver()
+    rlat_r, rlon_r = math.radians(rlat), math.radians(rlon)
+    return rlat, rlon, (math.sin(rlat_r), math.cos(rlat_r), rlat_r, rlon_r)
 
 
 def bearing_distance(sin1, cos1, rlat_r, rlon_r, alat, alon):
@@ -201,6 +246,39 @@ def _alt_ft(v):
     if isinstance(v, (int, float)):
         return float(v)
     return 0.0  # "ground" / null
+
+
+def merge_obs(cells, trig, lat, lon, alt, now_i):
+    """De-duplicate one observation onto the coarse coverage grid.
+
+    Both ingest paths go through here, so a cell key means exactly the same
+    thing whether the observation arrived in a history chunk or a live
+    aircraft.json poll. The two sources have to be able to share a store.
+
+    `cells` maps grid-cell coords -> [brg, dist, alt, first_seen, last_seen]:
+    lat/lon rounded to STEP-sized cells, altitude bucketed into ALT_BIN_FT bins.
+    A cell already present is only re-timed; the trig is skipped entirely.
+    """
+    key = (round(lat / STEP), round(lon / STEP), int(alt // ALT_BIN_FT))
+    rec = cells.get(key)
+    if rec is not None:                 # already have this cell —
+        if now_i:
+            if now_i < rec[FIRST_SEEN]:
+                rec[FIRST_SEEN] = now_i
+            if now_i > rec[LAST_SEEN]:
+                rec[LAST_SEEN] = now_i
+        return
+    sin1, cos1, rlat_r, rlon_r = trig
+    brg, dist = bearing_distance(sin1, cos1, rlat_r, rlon_r, lat, lon)
+    if dist > MAX_RANGE_NM:   # discard obvious bad positions
+        return
+    # Optional 4/3-earth LOS filter: an aircraft at `alt` can't be heard farther
+    # than 1.23 * (sqrt(alt) + sqrt(antenna_MSL)) * 1.15 nm. Weak decodes with
+    # bit-corrupted altitude fields land in low bins at physically impossible
+    # distances — this rejects them at ingest.
+    if LOS_FILTER and dist > _LOS_K * math.sqrt(max(0.0, alt)) + _LOS_ANT_TERM:
+        return
+    cells[key] = [round(brg, 1), round(dist, 2), int(alt), now_i, now_i]
 
 
 def iter_chunks(names):
@@ -359,10 +437,12 @@ def _store_conn():
     return con
 
 
-def _store_merge(cells):
-    """Upsert this window's cells into the persistent store (keep earliest
-    first_seen, latest last_seen) and return the whole accumulated coverage as
-    [brg, dist, alt, first_seen] points plus the first-seen span."""
+def _store_upsert(cells):
+    """Upsert a batch of cells into the persistent store, keeping the earliest
+    first_seen and the latest last_seen, then apply retention. One transaction.
+
+    Called both by a /cone rebuild (chunk mode) and by the background poller's
+    periodic flush, so it does the write and nothing else."""
     con = _store_conn()
     try:
         with con:   # one transaction
@@ -377,6 +457,15 @@ def _store_merge(cells):
             if RETAIN_DAYS > 0:   # rolling window: drop cells not heard recently
                 cutoff = int(time.time()) - RETAIN_DAYS * 86400
                 con.execute("DELETE FROM cells WHERE last_seen < ?", (cutoff,))
+    finally:
+        con.close()
+
+
+def _store_read_all():
+    """The whole accumulated coverage as [brg, dist, alt, first_seen] points,
+    plus the first-seen span."""
+    con = _store_conn()
+    try:
         points = [[b, d, a, fs] for (b, d, a, fs)
                   in con.execute("SELECT brg,dist,alt,first_seen FROM cells")]
         lo, hi = con.execute(
@@ -386,28 +475,173 @@ def _store_merge(cells):
     return points, lo or 0, hi or 0
 
 
-def build_points():
-    """Read recent-history chunks and return the cone payload: de-duplicated
-    observations as [bearing, distance_nm, altitude_ft, first_seen_epoch], plus
-    per-bearing reach. With ADSB_DATA_DIR set, coverage is merged into a
-    persistent store and the payload is the whole accumulated set, not just this
-    read window."""
-    rlat, rlon = receiver()
-    # Receiver terms are constant for the whole run — compute once, not per row.
-    rlat_r, rlon_r = math.radians(rlat), math.radians(rlon)
-    sin1, cos1 = math.sin(rlat_r), math.cos(rlat_r)
+def _merge_cells(dst, src):
+    """Fold src's cells into dst, widening each cell's first/last-seen span."""
+    for key, r in src.items():
+        cur = dst.get(key)
+        if cur is None:
+            dst[key] = list(r)
+            continue
+        if r[FIRST_SEEN] and (not cur[FIRST_SEEN] or r[FIRST_SEEN] < cur[FIRST_SEEN]):
+            cur[FIRST_SEEN] = r[FIRST_SEEN]
+        if r[LAST_SEEN] > cur[LAST_SEEN]:
+            cur[LAST_SEEN] = r[LAST_SEEN]
+
+
+# --- background poll ingest (ADSB_INGEST=poll|both) --------------------------
+# The poller accumulates cells in _pending; a slower timer moves them into the
+# store. Without a data volume there is nowhere to move them to, so _pending
+# just keeps growing and is itself the accumulated coverage, lost on restart,
+# exactly as the no-persistence path has always behaved.
+_pending = {}
+_pending_lock = threading.Lock()
+_poll = {
+    "started": 0.0,      # when the poller thread came up
+    "last_ok": 0.0,      # epoch of the last successful aircraft.json read
+    "last_flush": 0.0,   # epoch of the last write to the store
+    "polls": 0,
+    "errors": 0,
+    "aircraft": 0,       # positioned aircraft in the last successful read
+    "last_error": "",
+}
+POLL_STALE_FACTOR = 6    # /health flags the poller stale after this many missed reads
+
+
+def poll_once():
+    """Read /data/aircraft.json once, merging every positioned aircraft into the
+    pending batch. Returns the number of positioned aircraft seen.
+
+    A position in this file can be up to a minute old (readsb keeps an aircraft
+    listed for a while after its last position report), so the observation time
+    is `now - seen_pos`, not `now`. Recording a stale position as heard-just-now
+    would smear the timeline.
+    """
+    _, _, trig = receiver_trig()
+    doc = _fetch_json(ULTRAFEEDER + "/data/aircraft.json", timeout=10)
+    now = float(doc.get("now") or time.time())
+    n = 0
+    with _pending_lock:
+        for ac in doc.get("aircraft", []):
+            lat, lon = ac.get("lat"), ac.get("lon")
+            if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                continue
+            # alt_baro is the field tar1090's chunks carry, and "ground" reads as
+            # 0 ft. Fall back to alt_geom so an aircraft reporting only geometric
+            # altitude isn't silently filed at ground level.
+            alt = ac.get("alt_baro")
+            if alt is None:
+                alt = ac.get("alt_geom")
+            seen = ac.get("seen_pos")
+            t = now - seen if isinstance(seen, (int, float)) else now
+            merge_obs(_pending, trig, lat, lon, _alt_ft(alt), int(t))
+            n += 1
+    return n
+
+
+def flush_pending():
+    """Move the accumulated poll batch into the persistent store, and return how
+    many cells were written.
+
+    A no-op without a store: there, _pending IS the accumulated coverage, so
+    draining it would throw the map away. If the write fails the batch goes back
+    into _pending for the next attempt rather than being lost.
+    """
+    global _pending
+    if not STORE_PATH:
+        return 0
+    with _pending_lock:
+        if not _pending:
+            return 0
+        batch, _pending = _pending, {}
+    try:
+        _store_upsert(batch)
+    except Exception:
+        with _pending_lock:
+            _merge_cells(batch, _pending)
+            _pending = batch
+        raise
+    _poll["last_flush"] = time.time()
+    return len(batch)
+
+
+def _poll_loop():
+    """Background ingest thread: read on the poll interval, write on the slower
+    flush interval."""
+    _poll["started"] = time.time()
+    next_flush = time.time() + FLUSH_SECS
+    while True:
+        t0 = time.time()
+        try:
+            _poll["aircraft"] = poll_once()
+            _poll["polls"] += 1
+            _poll["last_ok"] = t0
+            _poll["last_error"] = ""
+        except Exception as e:
+            _poll["errors"] += 1
+            _poll["last_error"] = str(e)
+            sys.stderr.write("aircraft.json poll failed: %s\n" % e)
+        if time.time() >= next_flush:
+            try:
+                n = flush_pending()
+                if n:
+                    sys.stderr.write("poll: flushed %d cells to the store\n" % n)
+            except Exception as e:
+                sys.stderr.write("poll: store flush failed: %s\n" % e)
+            next_flush = time.time() + FLUSH_SECS
+        # Sleep out the remainder of the interval so a slow read doesn't make the
+        # cadence drift longer and longer.
+        time.sleep(max(0.5, POLL_SECS - (time.time() - t0)))
+
+
+def start_poller():
+    """Start the background ingest thread, if this mode wants one."""
+    if INGEST not in ("poll", "both"):
+        return
+    threading.Thread(target=_poll_loop, name="adsbvue-poll", daemon=True).start()
+    print("ingest: polling %s/data/aircraft.json every %gs, flush every %gs"
+          % (ULTRAFEEDER, POLL_SECS, FLUSH_SECS))
+
+
+def poll_health():
+    """Poller status for /health. Empty in chunk mode, which has no poller."""
+    if INGEST not in ("poll", "both"):
+        return {}
+    last_ok = _poll["last_ok"]
+    # Age is measured from the last good read, or from thread start if there has
+    # never been one, so a poller that has never succeeded still goes stale.
+    since = time.time() - (last_ok or _poll["started"] or time.time())
+    out = {
+        "poll_secs": POLL_SECS,
+        "flush_secs": FLUSH_SECS,
+        "last_poll": int(last_ok) if last_ok else None,
+        "last_poll_iso": (time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(last_ok))
+                          if last_ok else None),
+        "last_poll_age_secs": round(since, 1),
+        "poll_ok": since < POLL_SECS * POLL_STALE_FACTOR,
+        "polls": _poll["polls"],
+        "poll_errors": _poll["errors"],
+        "aircraft": _poll["aircraft"],
+        "pending_cells": len(_pending),
+        "last_flush": int(_poll["last_flush"]) if _poll["last_flush"] else None,
+    }
+    if _poll["last_error"]:
+        out["last_error"] = _poll["last_error"]
+    return out
+
+
+def read_chunks(trig):
+    """Read the newest history chunks into a fresh cell dict.
+
+    Returns (cells, chunks_read). Each cell tracks the earliest and latest time
+    it was heard — first_seen drives the timeline; last_seen drives store
+    retention.
+    """
     idx = _fetch_json(ULTRAFEEDER + "/chunks/chunks.json")
     names = idx.get("chunks", [])
     if MAX_CHUNKS > 0:
         names = names[-MAX_CHUNKS:]
-
     cells = {}        # grid-cell coords -> [brg, dist, alt, first_seen, last_seen]
     n_chunks = 0
-    # Single pass over every observation: de-duplicate onto a coarse grid (this is
-    # a coverage map, not a traffic replay) and convert each kept hit to
-    # receiver-relative polar coordinates. Each cell tracks the earliest and latest
-    # time it was heard — first_seen drives the timeline; last_seen is used to
-    # merge/retain in the persistent store.
     for doc in iter_chunks(names):
         n_chunks += 1
         for f in doc.get("files", []):
@@ -418,32 +652,37 @@ def build_points():
                 lat, lon = ac[4], ac[5]
                 if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
                     continue
-                alt = _alt_ft(ac[1])
-                # Grid-cell coordinates, not raw lat/lon: lat/lon rounded to STEP-sized
-                # cells and altitude bucketed into ALT_BIN_FT bins.
-                key = (round(lat / STEP), round(lon / STEP), int(alt // ALT_BIN_FT))
-                rec = cells.get(key)
-                if rec is not None:                 # already have this cell —
-                    if now_i:
-                        if now_i < rec[FIRST_SEEN]:
-                            rec[FIRST_SEEN] = now_i
-                        if now_i > rec[LAST_SEEN]:
-                            rec[LAST_SEEN] = now_i
-                    continue
-                brg, dist = bearing_distance(sin1, cos1, rlat_r, rlon_r, lat, lon)
-                if dist > MAX_RANGE_NM:   # discard obvious bad positions
-                    continue
-                # Optional 4/3-earth LOS filter: an aircraft at `alt` can't be heard
-                # farther than 1.23 * (sqrt(alt) + sqrt(antenna_MSL)) * 1.15 nm.
-                # Weak decodes with bit-corrupted altitude fields land in low bins at
-                # physically impossible distances — this rejects them at ingest.
-                if LOS_FILTER and dist > _LOS_K * math.sqrt(max(0.0, alt)) + _LOS_ANT_TERM:
-                    continue
-                cells[key] = [round(brg, 1), round(dist, 2), int(alt), now_i, now_i]
+                merge_obs(cells, trig, lat, lon, _alt_ft(ac[1]), now_i)
+    return cells, n_chunks
+
+
+def build_points():
+    """Build the cone payload: de-duplicated observations as
+    [bearing, distance_nm, altitude_ft, first_seen_epoch], plus per-bearing reach.
+
+    Where the observations come from depends on ADSB_INGEST. In chunk mode this
+    reads tar1090 history, as it always has. In poll mode the background thread
+    has already done the ingest, so this is close to a pure read. With
+    ADSB_DATA_DIR set the payload is the whole accumulated store, not just the
+    current window.
+    """
+    rlat, rlon, trig = receiver_trig()
+    cells = {}
+    n_chunks = 0
+    if INGEST in ("chunks", "both"):
+        cells, n_chunks = read_chunks(trig)
+    if INGEST in ("poll", "both"):
+        # Get the newest polls into the store before reading it back, so an
+        # explicit ?refresh=true isn't answered with data a flush interval old.
+        flush_pending()
 
     if STORE_PATH:
-        points, t_min, t_max = _store_merge(cells)
+        _store_upsert(cells)      # an empty batch in pure poll mode; still applies retention
+        points, t_min, t_max = _store_read_all()
     else:
+        if INGEST in ("poll", "both"):
+            with _pending_lock:   # no store: _pending is the accumulated coverage
+                _merge_cells(cells, _pending)
         points = [[r[BRG], r[DIST], r[ALT], r[FIRST_SEEN]] for r in cells.values()]
         times = [r[FIRST_SEEN] for r in cells.values() if r[FIRST_SEEN]]
         t_min = min(times) if times else 0
@@ -453,6 +692,7 @@ def build_points():
         "ok": True,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "ultrafeeder": ULTRAFEEDER,
+        "ingest": INGEST,
         "recv_lat": rlat,
         "recv_lon": rlon,
         "antenna_agl_ft": ANTENNA_AGL_FT,   # mast height for the terrain LOS model
@@ -573,7 +813,13 @@ class Handler(BaseHTTPRequestHandler):
                 # ADSB_HEYWHATSTHAT_ID is unset, never a 404.
                 self._send(200, _hwt_payload(), "application/json")
             elif path == "/health":
-                self._send(200, json.dumps({"ok": True}), "application/json")
+                # "ok" stays true whenever the process is serving, so existing
+                # container healthchecks behave as before. In poll mode the
+                # separate "poll_ok" flag reports whether the ingest thread is
+                # actually still reading, with "last_poll" to see how recently.
+                body = {"ok": True, "ingest": INGEST}
+                body.update(poll_health())
+                self._send(200, json.dumps(body), "application/json")
             else:
                 self._send(404, json.dumps({"ok": False, "error": "not found"}),
                            "application/json")
@@ -606,11 +852,20 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"ok": True, "path": out}), "application/json")
 
 
+def _on_term(signum, frame):
+    """Docker stops a container with SIGTERM, whose default action exits without
+    unwinding. Turn it into the same KeyboardInterrupt a Ctrl-C raises so the
+    shutdown path below runs and the pending poll batch reaches the store."""
+    raise KeyboardInterrupt
+
+
 def main():
-    print("ADSb-Vue  ultrafeeder=%s  port=%d" % (ULTRAFEEDER, PORT))
+    print("ADSb-Vue  ultrafeeder=%s  port=%d  ingest=%s" % (ULTRAFEEDER, PORT, INGEST))
     if STORE_PATH:
         print("persistence: accumulating coverage in %s" % STORE_PATH)
         seed_data_dir()
+    elif INGEST in ("poll", "both"):
+        print("note: no ADSB_DATA_DIR, so polled coverage is kept in memory only")
     cf = cities_file()
     if cf:
         print("cities: %s" % cf)
@@ -619,11 +874,19 @@ def main():
         print("receiver: %.6f, %.6f" % (rlat, rlon))
     except Exception as e:
         print("warning: could not read receiver.json yet (%s)" % e)
+    start_poller()
+    signal.signal(signal.SIGTERM, _on_term)
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print("listening on http://0.0.0.0:%d/  (view at /)" % PORT)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
+        try:
+            n = flush_pending()   # don't drop the last batch on a clean stop
+            if n:
+                print("flushed %d pending cells" % n)
+        except Exception as e:
+            sys.stderr.write("final flush failed: %s\n" % e)
         print("\nbye")
 
 
