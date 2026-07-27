@@ -82,7 +82,7 @@ environment variables:
 | `ADSB_WEB_PORT`    | `24556`              | Web-UI port to listen on (alias: `ADSB_PORT`). Not a data port. |
 | `ADSB_RECV_LAT`    | auto                 | Receiver latitude (else `/data/receiver.json`) |
 | `ADSB_RECV_LON`    | auto                 | Receiver longitude                        |
-| `ADSB_MAX_CHUNKS`  | `48`                 | Newest-first chunk cap (0 = all history)  |
+| `ADSB_MAX_CHUNKS`  | `48`                 | Newest-first chunk cap (`0` = all history). With persistence on, `4` to `8` does the same job for a fraction of the CPU: see [choosing a value](docs/max_chunks.md) |
 | `ADSB_CELL_NM`     | `1.5`                | De-dup grid cell size (nm)                |
 | `ADSB_ALT_BIN_FT`  | `1000`               | De-dup altitude bin (ft)                  |
 | `ADSB_MAX_RANGE_NM`| `400`                | Discard positions farther than this (nm)  |
@@ -101,8 +101,15 @@ environment variables:
 | `ADSB_HEYWHATSTHAT_ALTS_FT` | `10000,40000` | HWT ring altitudes (ft, comma-separated) |
 
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.
-Raise `ADSB_MAX_CHUNKS` (e.g. `0`) for the fullest envelope at the cost of a
-bigger payload and slower first load; lower `ADSB_CELL_NM` for finer detail.
+Lower `ADSB_CELL_NM` for finer detail.
+
+`ADSB_MAX_CHUNKS` is worth a moment's thought, since it drives most of
+ADSb-Vue's CPU and network cost. Without persistence, raising it (e.g. `0`)
+gives the fullest envelope at the cost of a bigger payload and a slower load.
+With **persistence** enabled the store holds your history, so a much lower
+value (`4` to `8`) does the same job for a fraction of the work. See
+[choosing a value for `ADSB_MAX_CHUNKS`](docs/max_chunks.md), especially if
+you are running on a Raspberry Pi.
 
 ### Setting them
 
@@ -119,7 +126,7 @@ services:
     restart: unless-stopped
     environment:
       - ADSB_ULTRAFEEDER=http://192.168.1.50
-      - ADSB_MAX_CHUNKS=0
+      - ADSB_MAX_CHUNKS=8
 ```
 
 **Docker — `.env` file (tidier for many settings).** Copy `.env.example` to
@@ -320,7 +327,7 @@ services:
     restart: unless-stopped
     environment:
       - ADSB_ULTRAFEEDER=https://your.tar1090.example/map
-      - ADSB_MAX_CHUNKS=0
+      - ADSB_MAX_CHUNKS=8
     ports:
       - 8077:24556          # host:container — the container's port is ADSB_WEB_PORT
 ```
