@@ -2,11 +2,19 @@
 # Registry as ghcr.io/jrsphoto/adsbvue:latest (plus a version tag when a v* git
 # tag is pushed). Multi-arch — amd64 + arm64 — so Raspberry Pi users can pull and
 # run without building. Auth is the built-in Actions token; no secrets to manage.
+#
+# ingest-* branches also build, but publish under their own branch name (an
+# ingest-poll push yields ghcr.io/jrsphoto/adsbvue:ingest-poll) and never touch
+# :latest. That exists so an experimental branch can be soak-tested on a real
+# feeder that runs the prebuilt image rather than a source clone, without
+# putting the experiment in front of everyone who pulls :latest.
 name: docker
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'ingest-*'
     tags: ['v*']
 
 jobs:
@@ -28,13 +36,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # latest tracks main; pushing a tag like v1.2 also publishes :1.2.
+      # latest tracks main; pushing a tag like v1.2 also publishes :1.2. A push to
+      # a non-default branch publishes under the branch name only — the enable
+      # guard is what keeps an experimental branch from ever moving :latest.
       - uses: docker/metadata-action@v5
         id: meta
         with:
           images: ghcr.io/${{ github.repository_owner }}/adsbvue
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch,enable=${{ github.ref_name != github.event.repository.default_branch }}
             type=semver,pattern={{version}}
 
       - uses: docker/build-push-action@v6
