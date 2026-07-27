@@ -254,14 +254,50 @@ _hwt_lock = threading.Lock()
 HWT_RETRY_SECS = 600     # after a failed fetch, don't re-hit their API for 10 min
 
 
+def _hwt_requested_alts_m():
+    """The current ADSB_HEYWHATSTHAT_ALTS_FT as a set of ints (metres, rounded).
+    Used both to build the fetch URL and to detect stale cache from a prior
+    config that requested different altitudes."""
+    out = set()
+    for a in HWT_ALTS_FT.split(","):
+        a = a.strip()
+        if not a:
+            continue
+        try:
+            out.add(int(round(float(a) * 0.3048)))
+        except ValueError:
+            pass
+    return out
+
+
+def _hwt_cached_alts_m(data):
+    """Alts (metres, ints) present in a cached HWT payload. HWT returns each
+    ring's alt as a string; coerce to int. Empty set on any parse trouble so
+    the caller treats the cache as unusable and refetches."""
+    try:
+        d = json.loads(data)
+        out = set()
+        for r in d.get("rings", []):
+            try:
+                out.add(int(round(float(r.get("alt", 0)))))
+            except (TypeError, ValueError):
+                pass
+        return out
+    except Exception:
+        return set()
+
+
 def _hwt_payload():
     """HeyWhatsThat horizon rings as JSON bytes ({} when unconfigured). The
-    panorama is static for a site, so fetch it once and cache it — in memory and,
-    when a data volume exists, on disk — out of respect for their free API."""
+    panorama is static for a site, so fetch it once and cache it: in memory and,
+    when a data volume exists, on disk, out of respect for their free API.
+    The cache invalidates automatically if the ADSB_HEYWHATSTHAT_ALTS_FT config
+    has changed since the cached payload was fetched."""
     if not HWT_ID:
         return b"{}"
+    want = _hwt_requested_alts_m()
     with _hwt_lock:
-        if _hwt["bytes"]:
+        if _hwt["bytes"] and _hwt_cached_alts_m(_hwt["bytes"]) == want:
             return _hwt["bytes"]
         cache = os.path.join(DATA_DIR, "hwt_%s.json" % HWT_ID) if DATA_DIR else None
         if cache and os.path.exists(cache):
@@ -269,14 +305,15 @@ def _hwt_payload():
                 with open(cache, "rb") as fh:
                     data = fh.read()
                 json.loads(data)               # validate; refetch if corrupt
-                _hwt["bytes"] = data
-                return data
+                if _hwt_cached_alts_m(data) == want:
+                    _hwt["bytes"] = data
+                    return data
+                # else fall through to refetch: config changed since cache was written
             except Exception:
                 pass
         if time.time() - _hwt["fail_ts"] < HWT_RETRY_SECS:
             return b"{}"
-        alts_m = ",".join(str(int(round(float(a) * 0.3048)))
-                          for a in HWT_ALTS_FT.split(",") if a.strip())
+        alts_m = ",".join(str(a) for a in sorted(want))
         url = ("https://www.heywhatsthat.com/api/upintheair.json"
                "?id=%s&refraction=0.25&alts=%s" % (HWT_ID, alts_m))
         try:
