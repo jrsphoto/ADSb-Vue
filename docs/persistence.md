@@ -44,22 +44,19 @@ also tracks `last_seen`), and only the distinct cells are **upserted** into the
 store in one transaction: new cell → insert; existing → keep `min(first_seen)`
 and `max(last_seen)`. Doing the heavy de-dup in memory keeps the DB writes cheap.
 
-*When* that upsert happens depends on `ADSB_INGEST`:
+The upsert happens on a timer, every `ADSB_FLUSH_SECS` (default 60), from the
+poller thread. Readings accumulate in memory in between, which is roughly 12×
+fewer transactions than writing on every read and matters for SD-card wear on a
+Pi. A crash loses at most one interval. The startup history fill writes the same
+way, once.
 
-- **`chunks`**: on each rebuild, so on a page load with an expired cache. The
-  window is ~100k distinct cells in one transaction.
-- **`poll` / `both`**: on a timer, every `ADSB_FLUSH_SECS` (default 60), from
-  the poller thread. Polls accumulate in memory in between, which is roughly 12×
-  fewer transactions than writing per poll and matters for SD-card wear on a Pi.
-  A crash loses at most one interval.
+The served payload is the *whole accumulated set* (`SELECT` from the store), not
+just what was read recently, and `/cone` serves pre-serialized cached bytes so
+ordinary page loads never touch the DB.
 
-Either way the served payload is the *whole accumulated set* (`SELECT` from the
-store), not just the read window, and `/cone` serves pre-serialized cached bytes
-so ordinary reads never touch the DB.
-
-Both ingest paths build cell keys through the same `merge_obs()`, so a cell
-seeded from history and later seen by a poll is one row, not two. That is what
-lets the startup fill and the poller share a store.
+Both the startup fill and the poller build cell keys through the same
+`merge_obs()`, so a cell seeded from history and later seen live is one row, not
+two. That is what lets them share a store.
 
 ### Load on start
 
@@ -68,7 +65,7 @@ with everything it had.
 
 ### Retention
 
-`ADSB_RETAIN_DAYS` (default 30, `0` = keep everything): each rebuild deletes cells
+`ADSB_RETAIN_DAYS` (default 30, `0` = keep everything): each write deletes cells
 whose `last_seen` is older than the cutoff — a rolling "last N days of coverage".
 Because a coverage map saturates (you eventually hear planes almost everywhere you
 can), the store plateaus rather than growing without bound.

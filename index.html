@@ -939,7 +939,7 @@ function initScene(data) {
 function updateMeta(d) {
   const maxAll = Math.max.apply(null, d.cone_all).toFixed(0);
   document.getElementById('meta').innerHTML =
-    d.count.toLocaleString() + ' obs &nbsp;|&nbsp; ' + d.chunks + ' chunks<br>' +
+    d.count.toLocaleString() + ' obs<br>' +
     'max range <b style="color:#4a8aaa">' + maxAll + ' nm</b>';
 }
 

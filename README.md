@@ -10,10 +10,10 @@ switchable render modes and a true volumetric density render.
 
 It converts every aircraft observation your receiver hears into bearing /
 distance / altitude relative to the antenna, and serves a self-contained
-Three.js page that renders the accumulated result. Observations come either
-from tar1090's rolling history chunks or from a background reader of the live
-aircraft list, which also works with dump1090-fa and dump1090-mutability. See
-[Ingest mode](#ingest-mode).
+Three.js page that renders the accumulated result. A background reader records
+continuously from your feeder's live aircraft list, so it works with
+dump1090-fa and dump1090-mutability as well as tar1090. See
+[How it records](#how-it-records).
 
 > For a practical guide to using it as a diagnostic tool — antenna placement,
 > reception troubleshooting, before/after comparisons — see
@@ -59,10 +59,10 @@ frame represents, a progress bar, and a slow camera orbit while recording.
 Press **Esc** to cancel a recording in progress. (Recording needs a Chromium-
 or Firefox-based browser.)
 
-How far back the window reaches is set by `ADSB_MAX_CHUNKS` — bigger is more
-history (`0` = everything the feeder retains). With **persistence** enabled
-(`ADSB_DATA_DIR`, see below), the timeline instead spans the whole accumulated
-store — up to `ADSB_RETAIN_DAYS` of coverage.
+With **persistence** enabled (`ADSB_DATA_DIR`, see below) the timeline spans the
+whole accumulated store, up to `ADSB_RETAIN_DAYS` of coverage. Without it, the
+window is whatever has been recorded since the last restart, starting from the
+history read in at boot (`ADSB_MAX_CHUNKS`).
 
 ## Run
 
@@ -85,10 +85,9 @@ environment variables:
 | `ADSB_WEB_PORT`    | `24556`              | Web-UI port to listen on (alias: `ADSB_PORT`). Not a data port. |
 | `ADSB_RECV_LAT`    | auto                 | Receiver latitude (else `/data/receiver.json`) |
 | `ADSB_RECV_LON`    | auto                 | Receiver longitude                        |
-| `ADSB_INGEST`      | `poll`               | Where observations come from: `poll`, `chunks`, or `both`. See [Ingest mode](#ingest-mode) below |
-| `ADSB_POLL_SECS`   | `5`                  | `poll`/`both`: seconds between `aircraft.json` reads |
-| `ADSB_FLUSH_SECS`  | `60`                 | `poll`/`both`: seconds between batched writes to the store |
-| `ADSB_MAX_CHUNKS`  | `48`                 | Newest-first chunk cap (`0` = all history). With persistence on, `4` to `8` does the same job for a fraction of the CPU: see [choosing a value](docs/max_chunks.md). In `poll` mode this is only the one-time startup fill, so a larger value is cheap |
+| `ADSB_POLL_SECS`   | `5`                  | Seconds between reads of the live aircraft list |
+| `ADSB_FLUSH_SECS`  | `60`                 | Seconds between batched writes to the store |
+| `ADSB_MAX_CHUNKS`  | `48`                 | How much tar1090 history the one-time startup fill reads (`0` = all). A boot cost only, so a larger value is cheap: see [choosing a value](docs/max_chunks.md) |
 | `ADSB_CELL_NM`     | `1.5`                | De-dup grid cell size (nm)                |
 | `ADSB_ALT_BIN_FT`  | `1000`               | De-dup altitude bin (ft)                  |
 | `ADSB_MAX_RANGE_NM`| `400`                | Discard positions farther than this (nm)  |
@@ -109,44 +108,37 @@ environment variables:
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.
 Lower `ADSB_CELL_NM` for finer detail.
 
-`ADSB_MAX_CHUNKS` is worth a moment's thought, since it drives most of
-ADSb-Vue's CPU and network cost. Without persistence, raising it (e.g. `0`)
-gives the fullest envelope at the cost of a bigger payload and a slower load.
-With **persistence** enabled the store holds your history, so a much lower
-value (`4` to `8`) does the same job for a fraction of the work. See
-[choosing a value for `ADSB_MAX_CHUNKS`](docs/max_chunks.md), especially if
-you are running on a Raspberry Pi.
+`ADSB_MAX_CHUNKS` only affects the one-time fill at startup, so it is cheap to
+set generously. `48` gives roughly six hours of history on a fresh install and
+the same amount of catch-up after downtime. See
+[choosing a value](docs/max_chunks.md).
 
-### Ingest mode
+### How it records
 
-`ADSB_INGEST` picks where observations come from.
+A background thread reads your feeder's live aircraft list
+(`/data/aircraft.json`) every `ADSB_POLL_SECS`, and records what it finds
+**whether or not anyone has the page open**. Results are batched to disk every
+`ADSB_FLUSH_SECS` rather than written on every read, which is easier on an SD
+card.
 
-**`chunks`** is the older behaviour, kept as a fallback. ADSb-Vue
-reads tar1090's rolling history files, but only at the moment a page loads.
-There is no timer, so a browser tab left open all day records nothing. When you
-next load the page it recovers what it missed, but only as far back as your
-chunk history reaches.
+Every decoder serves that endpoint, so this works with **dump1090-fa** and
+**dump1090-mutability** as well as tar1090.
 
-**`poll`** (the default) runs a background thread that reads `/data/aircraft.json` every few
-seconds and records continuously, whether or not anyone is looking. It also
-works with **dump1090-fa** and **dump1090-mutability**, which have no chunk
-files at all. Because polling has no history of its own, it reads the chunk
-files once at startup to fill in the map, and does the same after downtime to
-fill the gap. If your decoder has no chunk files, that step is skipped quietly
-and polling carries on.
+Live readings carry no history, so at startup ADSb-Vue reads tar1090's history
+files once to fill in the map rather than starting blank, and does the same
+after downtime to fill the gap. `ADSB_MAX_CHUNKS` sets how far back that
+reaches. On a decoder with no history files the step is skipped and the map
+simply starts from now.
 
-**`both`** polls continuously and also re-reads history on every rebuild. A
-fast aircraft can cross a grid cell in between two polls, so this catches
-slightly more, at the cost of considerably more load on your feeder.
+Pair this with `ADSB_DATA_DIR` so what it records survives a restart.
 
-> **Worth knowing:** polling is *lighter* on the feeder than the chunk path, not
-> heavier. Measured on a live receiver at a 1.0 nm cell size, polling every 5
-> seconds moved about 19 MB/hour against 33 MB/hour for chunks at
-> `ADSB_MAX_CHUNKS=4`.
+> **Worth knowing:** this is *lighter* on your feeder than the old approach, not
+> heavier. Measured on a live receiver at a 1.0 nm cell size, reading every 5
+> seconds moved about 19 MB/hour against 33 MB/hour for the history-file path.
 
-Use `poll` or `both` together with `ADSB_DATA_DIR`, so what it records survives
-a restart. `/health` reports the ingest mode and, when polling, how long ago
-the last successful read happened.
+If the map ever looks wrong, `/health` is the place to start. It reports whether
+the reader is still getting data and how long ago, which separates "the antenna
+has gone quiet" from "ADSb-Vue has stopped reading."
 
 ### Setting them
 
@@ -317,9 +309,9 @@ needed**, and it survives every update and container recreation. See
 - `GET /cone`    — observations as JSON (`?refresh=true` bypasses the cache)
 - `GET /cities`  — optional local city labels (your `cities.local.json`, else `[]`)
 - `GET /hwt`     — cached HeyWhatsThat horizon rings (`{}` when no id is set)
-- `GET /health`  : liveness, and the ingest mode. In `poll`/`both` it also
-  reports how long ago the last successful read was (`last_poll_age_secs`) and a
-  `poll_ok` flag, so you can tell a stalled poller from a healthy one
+- `GET /health`  : liveness, plus how long ago the last successful read was
+  (`last_poll_age_secs`), a `poll_ok` flag, and the aircraft count from that
+  read, so you can tell a quiet antenna from a stalled reader
 
 ## Run via Docker (recommended)
 

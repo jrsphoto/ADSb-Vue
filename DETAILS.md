@@ -13,10 +13,9 @@ The whole app is two files and no build step:
 
 ```mermaid
 flowchart LR
-    A["feeder<br/>/data/aircraft.json"] -->|"poll every ADSB_POLL_SECS"| P["poller thread<br/>merge_obs → pending"]
-    T["tar1090<br/>/chunks/*.gz"] -->|"parallel GET"| S["server.py<br/>parse · de-dup · cone"]
+    A["feeder<br/>/data/aircraft.json"] -->|"read every ADSB_POLL_SECS"| P["poller thread<br/>merge_obs → pending"]
+    T["tar1090<br/>/chunks/*.gz"] -->|"once at startup"| P
     P -->|"batch flush every ADSB_FLUSH_SECS"| D[("SQLite store")]
-    S --> D
     D -->|"/cone (gzip JSON)"| B["index.html<br/>Three.js render"]
     B -->|"voxel · cone · points"| U["browser (WebGL)"]
 ```
@@ -25,11 +24,12 @@ flowchart LR
 
 ## The data sources
 
-`ADSB_INGEST` picks between them. Both feed the same grid through the same
-`merge_obs()`, so a cell means the same thing whichever one produced it, and the
-two can share one store. See [Ingest modes](#ingest-modes) below.
+Two, with different jobs. The live list is the ongoing source; history is read
+once at startup to avoid a blank map. Both feed the same grid through the same
+`merge_obs()`, so a cell means the same thing whichever produced it, which is
+what lets them share one store.
 
-### tar1090 chunks
+### tar1090 chunks (startup fill only)
 
 readsb (inside Ultrafeeder) keeps a rolling window of **recent history** so that
 tar1090 can draw trails when you open the map. It exposes that as:
@@ -48,11 +48,11 @@ tar1090 can draw trails when you open the map. It exposes that as:
 Each `aircraft` entry is a compact positional array: `[hex, alt_ft, ground_speed,
 track, lat, lon, ...]`. We only use indices 1 (alt), 4 (lat), 5 (lon).
 
-History is self-contained: one read gives you hours of the past, which is why
-this path could get away with being request-driven. It is also the reason it is
-tar1090-only. dump1090-fa and dump1090-mutability have no `/chunks/` endpoint.
+History is self-contained: one read gives you hours of the past. It is also
+tar1090-only. dump1090-fa and dump1090-mutability have no `/chunks/` endpoint,
+which is why this is the optional half.
 
-### The live aircraft list
+### The live aircraft list (the ongoing source)
 
 `GET /data/aircraft.json` is the currently-tracked aircraft, updated about once a
 second, roughly 26 KB gzipped. Every decoder serves it, which is what makes
@@ -61,6 +61,7 @@ dump1090-fa and dump1090-mutability usable.
 It carries no history at all, so reading it only works with something running
 continuously. That is the whole reason the poller thread exists: a coverage map
 is an *accumulation*, and you cannot accumulate from snapshots you never took.
+It is also why history still gets read once at boot.
 
 Two details that matter for correctness:
 
@@ -73,10 +74,7 @@ Two details that matter for correctness:
   is worse: without it an aircraft reporting only geometric altitude gets filed
   at 0 ft, a fake ground contact that drags the coverage floor down.
 
-### Ingest modes
-
-| `ADSB_INGEST` | history at startup | records continuously | works on dump1090-fa |
-|---|---|---|---|
+---|---|---|---|
 | `poll` (default) | yes, once | yes | yes |
 | `chunks` | n/a, reads history on demand | no, only on page load | no |
 | `both` | yes | yes, plus history on every rebuild | partially |
@@ -108,7 +106,7 @@ you'd expect precedence to work. `.env.example` documents every option.
 Config splits into two intentional categories in the source:
 
 - **Tunables** exposed as env vars: `ULTRAFEEDER`, `PORT`, `CACHE_SECS`,
-  `INGEST`, `POLL_SECS`, `FLUSH_SECS`,
+  `POLL_SECS`, `FLUSH_SECS`,
   `MAX_CHUNKS`, `CELL_NM`, `ALT_BIN_FT`, `MAX_RANGE_NM`, `LOW_ALT_FT`,
   `FETCH_WORKERS`, `ANTENNA_AGL_FT` (antenna mast height, ft — used only by the
   client's terrain model, passed through the payload), and the appearance
@@ -125,7 +123,7 @@ Docker image deliberately pins **neither**: an image-level default for either
 name would outrank the *other* name set by the user, and their server would
 listen somewhere they never asked for. `server.py` defaults to 24556 on its own.
 
-### The poller (`ADSB_INGEST=poll` or `both`)
+### The poller
 
 A single daemon thread, started by `start_poller()`, doing three things in order.
 
@@ -415,7 +413,7 @@ screenshot tooling struggles with a continuously-animating WebGL canvas.
   `THREE.Group`, wire it into `rebuild()` and a mode button.
 - New analysis over the data: it's all in `build_points()` / `build_cones()`;
   add fields to the payload dict and read them in the page's `updateMeta()`.
-- Different receiver network: everything keys off `/data/receiver.json` plus
-  either `/chunks/` or `/data/aircraft.json`, so point `ADSB_ULTRAFEEDER` at it
-  and pick the matching `ADSB_INGEST`. Only the chunk path needs tar1090
-  specifically; `poll` works against dump1090-fa and dump1090-mutability too.
+- Different receiver network: everything keys off `/data/receiver.json` and
+  `/data/aircraft.json`, so point `ADSB_ULTRAFEEDER` at it and it works. Only
+  the optional startup fill wants tar1090's `/chunks/`, and its absence just
+  means the map starts from now.

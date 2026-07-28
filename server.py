@@ -8,20 +8,14 @@ relative to the receiver and serves both the raw point stream and a
 self-contained Three.js page that can render it as a point cloud, a density
 voxel volume, or a coverage-envelope shell.
 
-Where observations come from is selected by ADSB_INGEST:
-  poll    (default) a background thread reading `/data/aircraft.json` on a
-          fixed interval, recording continuously whether or not anyone has the
-          page open. Every decoder serves that endpoint, so this works on
-          dump1090-fa and dump1090-mutability as well as tar1090, and its
-          resolution does not depend on the feeder's config. It has no history
-          of its own, so at startup it reads the history chunks once to fill in
-          the map, and again after downtime to fill the gap. A feeder with no
-          /chunks/ just starts from now.
-  chunks  tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
-          `chunk_*.gz`, gzip-compressed JSON), re-read on demand. Self-contained
-          history, but it records ONLY at the moment a page loads, and it needs
-          tar1090 specifically.
-  both    poll continuously and re-read history on every rebuild too.
+Ingest is a background thread reading `/data/aircraft.json` every few seconds.
+It records continuously, whether or not anyone has the page open. Every decoder
+serves that endpoint, so this works with dump1090-fa and dump1090-mutability as
+well as tar1090, and the resolution does not depend on the feeder's config.
+
+Polling has no history of its own, so at startup it reads tar1090's history
+chunks once to fill in the map, and again after downtime to fill the gap. A
+feeder with no /chunks/ simply starts from now.
 
 Zero third-party dependencies — Python 3 standard library only.
 
@@ -33,14 +27,10 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_WEB_PORT      web-UI port to listen on (default 24556; alias: ADSB_PORT).
                      NOT a data port — the ADS-B source is the URL in ADSB_ULTRAFEEDER
   ADSB_CACHE_SECS    seconds to cache parsed points (default 120)
-  ADSB_INGEST        where observations come from: poll | chunks | both
-                     (default poll: the only mode every decoder supports)
-  ADSB_POLL_SECS     poll mode: seconds between aircraft.json reads (default 5)
-  ADSB_FLUSH_SECS    poll mode: seconds between batched writes to the store
-                     (default 60)
-  ADSB_MAX_CHUNKS    cap number of chunks read, newest-first (default 48, 0 = all).
-                     In chunk mode this is paid on every rebuild; in poll mode
-                     it is a one-time startup seed, so a bigger value is cheap
+  ADSB_POLL_SECS     seconds between aircraft.json reads (default 5)
+  ADSB_FLUSH_SECS    seconds between batched writes to the store (default 60)
+  ADSB_MAX_CHUNKS    how much history the startup fill reads, newest-first
+                     (default 48, 0 = all). A one-time cost, so bigger is cheap
   ADSB_CELL_NM       de-dup grid cell size, nm   (default 1.5)
   ADSB_ALT_BIN_FT    de-dup altitude bin, ft     (default 1000)
   ADSB_MAX_RANGE_NM  drop positions farther than this, nm (default 400)
@@ -119,16 +109,6 @@ ULTRAFEEDER = os.environ.get("ADSB_ULTRAFEEDER", "http://127.0.0.1").rstrip("/")
 # name; ADSB_PORT is still honoured for back-compat.
 PORT = int(os.environ.get("ADSB_WEB_PORT", os.environ.get("ADSB_PORT", "24556")))
 CACHE_SECS = int(os.environ.get("ADSB_CACHE_SECS", "120"))
-# --- ingest source ---
-# "poll" runs a background thread reading aircraft.json and seeds from history at
-# startup; "chunks" is the older request-driven path that only records when a page
-# is loaded; "both" does each. Default is "poll" because it is the only mode that
-# works on every decoder: /data/aircraft.json is universal, while /chunks/ is
-# tar1090-only and absent on dump1090-fa and dump1090-mutability.
-INGEST = os.environ.get("ADSB_INGEST", "poll").strip().lower()
-if INGEST not in ("poll", "chunks", "both"):
-    sys.stderr.write("ADSB_INGEST=%r not one of poll|chunks|both; using poll\n" % INGEST)
-    INGEST = "poll"
 # Poll interval. An aircraft at 500 kt covers 0.139 nm/s, so a cell of CELL_NM is
 # crossed in CELL_NM / 0.139 seconds. Polling faster than that only re-reads
 # positions that de-dup into a cell already recorded. 5 s suits the 1.0-1.5 nm
@@ -500,7 +480,7 @@ def _merge_cells(dst, src):
             cur[LAST_SEEN] = r[LAST_SEEN]
 
 
-# --- background poll ingest (ADSB_INGEST=poll|both) --------------------------
+# --- background ingest -------------------------------------------------------
 # The poller accumulates cells in _pending; a slower timer moves them into the
 # store. Without a data volume there is nowhere to move them to, so _pending
 # just keeps growing and is itself the accumulated coverage, lost on restart,
@@ -614,18 +594,14 @@ def _poll_loop():
 
 
 def start_poller():
-    """Start the background ingest thread, if this mode wants one."""
-    if INGEST not in ("poll", "both"):
-        return
+    """Start the background ingest thread."""
     threading.Thread(target=_poll_loop, name="adsbvue-poll", daemon=True).start()
     print("ingest: polling %s/data/aircraft.json every %gs, flush every %gs"
           % (ULTRAFEEDER, POLL_SECS, FLUSH_SECS))
 
 
 def poll_health():
-    """Poller status for /health. Empty in chunk mode, which has no poller."""
-    if INGEST not in ("poll", "both"):
-        return {}
+    """Poller status for /health."""
     last_ok = _poll["last_ok"]
     # Age is measured from the last good read, or from thread start if there has
     # never been one, so a poller that has never succeeded still goes stale.
@@ -716,8 +692,6 @@ def seed_from_chunks():
     startup cost rather than a per-rebuild one, so a larger value is much
     cheaper here than it was on the chunk path.
     """
-    if INGEST not in ("poll", "both"):
-        return 0
     newest = 0
     if STORE_PATH and os.path.exists(STORE_PATH):
         try:
@@ -762,39 +736,25 @@ def build_points():
     """Build the cone payload: de-duplicated observations as
     [bearing, distance_nm, altitude_ft, first_seen_epoch], plus per-bearing reach.
 
-    Where the observations come from depends on ADSB_INGEST. In chunk mode this
-    reads tar1090 history, as it always has. In poll mode the background thread
-    has already done the ingest, so this is close to a pure read. With
-    ADSB_DATA_DIR set the payload is the whole accumulated store, not just the
-    current window.
+    This is a read, not an ingest: the poller thread has already done the
+    recording. With ADSB_DATA_DIR set the payload is the whole accumulated
+    store; without it, whatever the poller is holding in memory.
+
+    It is still worth single-flighting behind _build_lock, because a large
+    store means selecting a million-plus rows and then serialising and gzipping
+    them, which is not something two concurrent requests should both do.
     """
-    rlat, rlon, trig = receiver_trig()
-    cells = {}
-    n_chunks = 0
-    if INGEST in ("chunks", "both"):
-        try:
-            cells, n_chunks = read_chunks(trig)
-        except NoChunkHistory as e:
-            if INGEST == "chunks":
-                # Chunks are the only source in this mode, so there is nothing
-                # to serve. Say what to do rather than surfacing a bare 404.
-                raise RuntimeError("%s. Set ADSB_INGEST=poll to read the live "
-                                   "aircraft list instead." % e)
-            # "both": the poller is still feeding the store, so a feeder without
-            # history is a smaller map, not a failure.
-            cells, n_chunks = {}, 0
-    if INGEST in ("poll", "both"):
-        # Get the newest polls into the store before reading it back, so an
-        # explicit ?refresh=true isn't answered with data a flush interval old.
-        flush_pending()
+    rlat, rlon = receiver()
+    # Land the newest polls before reading, so an explicit ?refresh=true is
+    # never answered with data a whole flush interval stale.
+    flush_pending()
 
     if STORE_PATH:
-        _store_upsert(cells)      # an empty batch in pure poll mode; still applies retention
+        _store_upsert({})         # empty batch, but this is what applies retention
         points, t_min, t_max = _store_read_all()
     else:
-        if INGEST in ("poll", "both"):
-            with _pending_lock:   # no store: _pending is the accumulated coverage
-                _merge_cells(cells, _pending)
+        with _pending_lock:       # no store: _pending is the accumulated coverage
+            cells = dict(_pending)
         points = [[r[BRG], r[DIST], r[ALT], r[FIRST_SEEN]] for r in cells.values()]
         times = [r[FIRST_SEEN] for r in cells.values() if r[FIRST_SEEN]]
         t_min = min(times) if times else 0
@@ -804,7 +764,6 @@ def build_points():
         "ok": True,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "ultrafeeder": ULTRAFEEDER,
-        "ingest": INGEST,
         "recv_lat": rlat,
         "recv_lon": rlon,
         "antenna_agl_ft": ANTENNA_AGL_FT,   # mast height for the terrain LOS model
@@ -812,7 +771,6 @@ def build_points():
         "home_border_color": HOME_BORDER_COLOR,
         "fog_density": FOG_DENSITY,
         "count": len(points),
-        "chunks": n_chunks,
         "t_min": t_min,          # earliest / latest first-seen time in the window
         "t_max": t_max,          # (epoch seconds) — drives the timeline scrubber
         "points": points,        # [bearing, dist_nm, alt_ft, first_seen_epoch]
@@ -926,10 +884,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, _hwt_payload(), "application/json")
             elif path == "/health":
                 # "ok" stays true whenever the process is serving, so existing
-                # container healthchecks behave as before. In poll mode the
-                # separate "poll_ok" flag reports whether the ingest thread is
-                # actually still reading, with "last_poll" to see how recently.
-                body = {"ok": True, "ingest": INGEST}
+                # container healthchecks behave as before. The separate
+                # "poll_ok" flag reports whether the ingest thread is actually
+                # still reading, with "last_poll" to see how recently. Those two
+                # are what tell an operator whether a dead map means a dead
+                # antenna or a dead reader.
+                body = {"ok": True}
                 body.update(poll_health())
                 self._send(200, json.dumps(body), "application/json")
             else:
@@ -972,12 +932,20 @@ def _on_term(signum, frame):
 
 
 def main():
-    print("ADSb-Vue  ultrafeeder=%s  port=%d  ingest=%s" % (ULTRAFEEDER, PORT, INGEST))
+    print("ADSb-Vue  ultrafeeder=%s  port=%d" % (ULTRAFEEDER, PORT))
+    old = os.environ.get("ADSB_INGEST", "").strip().lower()
+    if old:
+        # Silently ignoring it would be worse than saying so, especially for
+        # anyone who had it set to "chunks" and is now getting polling instead.
+        print("note: ADSB_INGEST=%s is obsolete and ignored. There is one ingest "
+              "path now: continuous polling of aircraft.json, filled in from "
+              "history at startup. You can remove the setting." % old)
     if STORE_PATH:
         print("persistence: accumulating coverage in %s" % STORE_PATH)
         seed_data_dir()
-    elif INGEST in ("poll", "both"):
-        print("note: no ADSB_DATA_DIR, so polled coverage is kept in memory only")
+    else:
+        print("note: no ADSB_DATA_DIR, so coverage is kept in memory only and is "
+              "lost on restart")
     cf = cities_file()
     if cf:
         print("cities: %s" % cf)
@@ -986,15 +954,6 @@ def main():
         print("receiver: %.6f, %.6f" % (rlat, rlon))
     except Exception as e:
         print("warning: could not read receiver.json yet (%s)" % e)
-    if INGEST == "chunks":
-        # Fail loudly at boot rather than with a 404 on the first page load.
-        try:
-            _fetch(ULTRAFEEDER + "/chunks/chunks.json", timeout=8)
-        except Exception as e:
-            print("warning: ADSB_INGEST=chunks but %s/chunks/ is not readable (%s)."
-                  % (ULTRAFEEDER, e))
-            print("         dump1090-fa and dump1090-mutability have no chunk files.")
-            print("         Set ADSB_INGEST=poll to read the live aircraft list instead.")
     start_poller()
     signal.signal(signal.SIGTERM, _on_term)
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
