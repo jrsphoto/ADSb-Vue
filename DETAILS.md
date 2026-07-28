@@ -239,6 +239,18 @@ just writes pre-baked bytes — no per-request `json.dumps` over the whole point
 list, no per-request compression. `CACHE_SECS` controls staleness;
 `?refresh=true` forces a rebuild.
 
+**The parsed dict is deliberately not cached, and the reference is dropped as
+soon as it has been serialized.** A point is `[brg, dist, alt, first_seen]`,
+which costs about 196 bytes once you count the list object and the four boxed
+numbers, so at 1.5M cells the point list alone is ~310 MB of Python objects.
+Keeping it was pure waste: the only reader was a `get_cone()` helper with no
+callers. Measured against a real 1.59M-cell store, dropping it took resident
+memory from **472 MB to 115 MB** for a byte-identical payload.
+
+The *peak* during a rebuild is unchanged at ~490 MB, because the list still has
+to be built and serialized before it can be thrown away. That is the number to
+size a small Pi against, not the resting figure.
+
 **Only one thread ever writes to SQLite: the poller.** `build_points()` is a
 pure reader. It used to call `_store_upsert({})`, which with an empty batch did
 nothing except redo the retention `DELETE`, and that is a full table scan taking

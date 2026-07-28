@@ -162,8 +162,10 @@ BRG, DIST, ALT, FIRST_SEEN, LAST_SEEN = 0, 1, 2, 3, 4
 
 _recv = {"pos": None}            # (lat, lon) once resolved; one tuple, so a reader
 _recv_lock = threading.Lock()    # never sees a half-written pair (poller + requests)
-# data = parsed dict; json/gz = payload serialized once per rebuild (see _ensure)
-_cache = {"ts": 0.0, "data": None, "json": None, "gz": None}
+# json/gz = the payload serialized and compressed once per rebuild (see _ensure).
+# The parsed dict is deliberately NOT kept: nothing reads it, and at 1.5M cells
+# it is ~310 MB of Python objects.
+_cache = {"ts": 0.0, "json": None, "gz": None}
 _cache_lock = threading.Lock()   # guards the (fast) cache read/write only
 _build_lock = threading.Lock()   # single-flights the (slow) rebuild
 
@@ -859,14 +861,17 @@ def _ensure(refresh=False):
             return snap
         data = build_points()
         raw = json.dumps(data).encode("utf-8")
-        snap = {"ts": time.time(), "data": data, "json": raw, "gz": gzip.compress(raw, 6)}
+        # Drop the point list before allocating the gzip buffer. At 1.5M cells
+        # it is ~310 MB of Python objects ([brg, dist, alt, first_seen] costs
+        # ~196 bytes each once you count the list and the four boxed numbers),
+        # and everything downstream works from `raw`. Keeping it cached was
+        # costing that much for nothing: the only reader was get_cone(), which
+        # had no callers.
+        del data
+        snap = {"ts": time.time(), "json": raw, "gz": gzip.compress(raw, 6)}
         with _cache_lock:
             _cache.update(snap)
         return snap
-
-
-def get_cone(refresh=False):
-    return _ensure(refresh)["data"]
 
 
 class Handler(BaseHTTPRequestHandler):
