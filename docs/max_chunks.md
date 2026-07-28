@@ -1,9 +1,42 @@
 # Choosing a value for `ADSB_MAX_CHUNKS`
 
 `ADSB_MAX_CHUNKS` sets how many of tar1090's rolling history chunks the server
-downloads and parses on every rebuild. It is the single biggest lever on
-ADSb-Vue's CPU and network cost, and the right value depends almost entirely
-on one thing: whether you have persistence turned on.
+downloads and parses. **What that costs you, and therefore the right value,
+depends completely on which `ADSB_INGEST` mode you are running.** The two
+answers point in opposite directions, so check this first.
+
+> **Read this bit before the rest of the page.** Most of this document was
+> written for `chunks` mode and its advice is wrong for `poll` mode.
+
+## Which mode are you in?
+
+### `ADSB_INGEST=poll` (or `both`)
+
+Chunks are read **once, at startup**, to fill in the map so polling does not
+begin blank, and again after downtime to fill the gap. Ongoing recording is
+done by the poller, not by chunks. So this is a **one-time cost, not a
+recurring one**, and the tuning problem the rest of this page describes does
+not exist.
+
+**Set it high.** `48` gives roughly six hours of startup fill and gap recovery.
+`0` reads everything the feeder retains, which is the fullest possible cold
+start at the cost of a slower first boot. There is no ongoing penalty for
+either, because the read does not repeat: if the stored map is already current,
+startup skips it entirely.
+
+The only reason to keep it low is if a slow first boot bothers you.
+
+**Everything below this line applies to `chunks` mode.** In particular, the
+"`4` is a good default" advice is the opposite of what you want in `poll` mode,
+where a low value means a three-hour outage recovers about twenty minutes of
+coverage.
+
+### `ADSB_INGEST=chunks` (the current default)
+
+Chunks are the ongoing source, re-read on every rebuild, which makes this the
+single biggest lever on ADSb-Vue's CPU and network cost. The right value
+depends almost entirely on whether you have persistence turned on. That is what
+the rest of this page is about.
 
 If you want the answer without the reasoning, use the table below.
 
@@ -11,6 +44,7 @@ If you want the answer without the reasoning, use the table below.
 
 | Your setup | Suggested value | Why |
 | --- | --- | --- |
+| **`ADSB_INGEST=poll` or `both`** | **`48`, or `0`** | **One-time startup fill and gap recovery, not a recurring cost. Nothing below this row applies to you.** |
 | Persistence on (`ADSB_DATA_DIR` set) | `4` to `8` | The store holds your history. Chunks only need to cover the gap between rebuilds. |
 | Persistence on, running on a Raspberry Pi | `4` | Same reasoning, and the CPU saving matters most here. |
 | Persistence on, first run or just wiped the store | `48` temporarily, then drop to `4` | Seeds the store with several hours of coverage immediately, then stops paying for it. |
@@ -140,8 +174,21 @@ Using the example above (8-minute chunks, 120-second rebuilds):
 
 - The mathematical minimum is 1 chunk, since one 8-minute chunk already
   covers a 2-minute gap
-- `4` gives a 16x margin (32 minutes of overlap)
-- `8` gives a 32x margin (64 minutes of overlap)
+- `4` gives roughly 16 to 21 minutes of overlap
+- `8` gives roughly 48 to 53 minutes
+
+> **Why those are not simply 32 and 64 minutes.** The chunk list does not end
+> with full chunks. Its last two entries are `current_large.gz` and
+> `current_small.gz`, partial buffers that are still filling. Because the server
+> takes the newest N entries, **two of your N slots are always those partials**,
+> whatever N you choose. Measured on a live feeder, `current_small` held 0.6
+> minutes at one moment and `current_large` was empty, having just rolled over;
+> at another point in the cycle `current_large` held 4.7 minutes.
+>
+> So the usable history is about `(N - 2)` full chunks plus whatever the
+> partials happen to hold. At `4` that is two full chunks and change. The fixed
+> two-slot cost matters proportionally more the smaller N is, which is exactly
+> the range recommended here.
 
 That margin absorbs a container restart, a feeder hiccup, a rebuild that runs
 long, or clock skew between the two machines, without ever dropping
