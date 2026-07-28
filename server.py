@@ -480,151 +480,6 @@ def _merge_cells(dst, src):
             cur[LAST_SEEN] = r[LAST_SEEN]
 
 
-# --- background ingest -------------------------------------------------------
-# The poller accumulates cells in _pending; a slower timer moves them into the
-# store. Without a data volume there is nowhere to move them to, so _pending
-# just keeps growing and is itself the accumulated coverage, lost on restart,
-# exactly as the no-persistence path has always behaved.
-_pending = {}
-_pending_lock = threading.Lock()
-_poll = {
-    "started": 0.0,      # when the poller thread came up
-    "last_ok": 0.0,      # epoch of the last successful aircraft.json read
-    "last_flush": 0.0,   # epoch of the last write to the store
-    "polls": 0,
-    "errors": 0,
-    "aircraft": 0,       # positioned aircraft in the last successful read
-    "last_error": "",
-}
-POLL_STALE_FACTOR = 6    # /health flags the poller stale after this many missed reads
-
-
-def poll_once():
-    """Read /data/aircraft.json once, merging every positioned aircraft into the
-    pending batch. Returns the number of positioned aircraft seen.
-
-    A position in this file can be up to a minute old (readsb keeps an aircraft
-    listed for a while after its last position report), so the observation time
-    is `now - seen_pos`, not `now`. Recording a stale position as heard-just-now
-    would smear the timeline.
-    """
-    _, _, trig = receiver_trig()
-    doc = _fetch_json(ULTRAFEEDER + "/data/aircraft.json", timeout=10)
-    now = float(doc.get("now") or time.time())
-    n = 0
-    with _pending_lock:
-        for ac in doc.get("aircraft", []):
-            lat, lon = ac.get("lat"), ac.get("lon")
-            if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
-                continue
-            # alt_baro is the field tar1090's chunks carry, and "ground" reads as
-            # 0 ft. Fall back to alt_geom so an aircraft reporting only geometric
-            # altitude isn't silently filed at ground level.
-            alt = ac.get("alt_baro")
-            if alt is None:
-                alt = ac.get("alt_geom")
-            seen = ac.get("seen_pos")
-            t = now - seen if isinstance(seen, (int, float)) else now
-            merge_obs(_pending, trig, lat, lon, _alt_ft(alt), int(t))
-            n += 1
-    return n
-
-
-def flush_pending():
-    """Move the accumulated poll batch into the persistent store, and return how
-    many cells were written.
-
-    A no-op without a store: there, _pending IS the accumulated coverage, so
-    draining it would throw the map away. If the write fails the batch goes back
-    into _pending for the next attempt rather than being lost.
-    """
-    global _pending
-    if not STORE_PATH:
-        return 0
-    with _pending_lock:
-        if not _pending:
-            return 0
-        batch, _pending = _pending, {}
-    try:
-        _store_upsert(batch)
-    except Exception:
-        with _pending_lock:
-            _merge_cells(batch, _pending)
-            _pending = batch
-        raise
-    _poll["last_flush"] = time.time()
-    return len(batch)
-
-
-def _poll_loop():
-    """Background ingest thread: read on the poll interval, write on the slower
-    flush interval.
-
-    Seeds from history first. That runs here rather than in main() so a slow or
-    unreachable feeder delays ingest only, never the web server coming up.
-    """
-    _poll["started"] = time.time()
-    try:
-        _poll["seeded"] = seed_from_chunks()
-    except Exception as e:
-        sys.stderr.write("seed failed: %s\n" % e)
-    next_flush = time.time() + FLUSH_SECS
-    while True:
-        t0 = time.time()
-        try:
-            _poll["aircraft"] = poll_once()
-            _poll["polls"] += 1
-            _poll["last_ok"] = t0
-            _poll["last_error"] = ""
-        except Exception as e:
-            _poll["errors"] += 1
-            _poll["last_error"] = str(e)
-            sys.stderr.write("aircraft.json poll failed: %s\n" % e)
-        if time.time() >= next_flush:
-            try:
-                n = flush_pending()
-                if n:
-                    sys.stderr.write("poll: flushed %d cells to the store\n" % n)
-            except Exception as e:
-                sys.stderr.write("poll: store flush failed: %s\n" % e)
-            next_flush = time.time() + FLUSH_SECS
-        # Sleep out the remainder of the interval so a slow read doesn't make the
-        # cadence drift longer and longer.
-        time.sleep(max(0.5, POLL_SECS - (time.time() - t0)))
-
-
-def start_poller():
-    """Start the background ingest thread."""
-    threading.Thread(target=_poll_loop, name="adsbvue-poll", daemon=True).start()
-    print("ingest: polling %s/data/aircraft.json every %gs, flush every %gs"
-          % (ULTRAFEEDER, POLL_SECS, FLUSH_SECS))
-
-
-def poll_health():
-    """Poller status for /health."""
-    last_ok = _poll["last_ok"]
-    # Age is measured from the last good read, or from thread start if there has
-    # never been one, so a poller that has never succeeded still goes stale.
-    since = time.time() - (last_ok or _poll["started"] or time.time())
-    out = {
-        "poll_secs": POLL_SECS,
-        "flush_secs": FLUSH_SECS,
-        "last_poll": int(last_ok) if last_ok else None,
-        "last_poll_iso": (time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(last_ok))
-                          if last_ok else None),
-        "last_poll_age_secs": round(since, 1),
-        "poll_ok": since < POLL_SECS * POLL_STALE_FACTOR,
-        "polls": _poll["polls"],
-        "poll_errors": _poll["errors"],
-        "aircraft": _poll["aircraft"],
-        "pending_cells": len(_pending),
-        "last_flush": int(_poll["last_flush"]) if _poll["last_flush"] else None,
-    }
-    if _poll["last_error"]:
-        out["last_error"] = _poll["last_error"]
-    return out
-
-
 class NoChunkHistory(Exception):
     """The feeder serves no /chunks/ endpoint. Expected on dump1090-fa and
     dump1090-mutability, which is exactly why poll mode is the default."""
@@ -671,65 +526,225 @@ def read_chunks(trig):
 SEED_FRESH_SECS = 120    # store newer than this: no gap worth a history read
 
 
-def seed_from_chunks():
-    """Fill the store from tar1090 history once at startup, so polling does not
-    begin from a blank map. Returns cells seeded.
+class Poller:
+    """Background ingest: reads the live aircraft list on a timer and batches
+    what it finds into the store.
 
-    Polling has no history of its own; it only knows what it has watched. On a
-    first run that means an empty map, which reads as "the tool is broken", and
-    after downtime it means a permanent hole. One history read at startup covers
-    both cases.
+    All of the poller's mutable state lives on the instance rather than in
+    module globals. That removes the reassign-a-global dance the flush used to
+    need, and turns what were dict keys into attributes, so a typo is an error
+    instead of quietly creating a new field nobody reads.
 
-    Skipped when the store already holds recent data, so a quick restart does
-    not re-read history it already has.
-
-    Non-fatal by design. dump1090-fa and dump1090-mutability have no /chunks/
-    endpoint at all, and polling works perfectly well without a seed, so a
-    failure here is logged and ignored rather than blocking ingest. That is what
-    makes those decoders usable.
-
-    ADSB_MAX_CHUNKS caps how far back this reads. In poll mode it is a one-time
-    startup cost rather than a per-rebuild one, so a larger value is much
-    cheaper here than it was on the chunk path.
+    `pending` holds cells read but not yet written. Without a data volume there
+    is nowhere to write them to, so it simply keeps growing and *is* the
+    accumulated coverage, lost on restart, exactly as the no-persistence path
+    has always behaved.
     """
-    newest = 0
-    if STORE_PATH and os.path.exists(STORE_PATH):
-        try:
-            con = _store_conn()
-            try:
-                newest = con.execute("SELECT max(last_seen) FROM cells").fetchone()[0] or 0
-            finally:
-                con.close()
-        except Exception as e:
-            sys.stderr.write("seed: could not read store (%s)\n" % e)
-    gap = time.time() - newest
-    if newest and gap < SEED_FRESH_SECS:
-        print("seed: store is current (%.0fs old), skipping history read" % gap)
-        return 0
-    try:
+
+    STALE_FACTOR = 6     # /health flags the poller stale after this many missed reads
+
+    def __init__(self):
+        self.pending = {}
+        self.lock = threading.Lock()
+        self.started = 0.0      # when the thread came up
+        self.last_ok = 0.0      # epoch of the last successful read
+        self.last_flush = 0.0   # epoch of the last write to the store
+        self.polls = 0
+        self.errors = 0
+        self.aircraft = 0       # positioned aircraft in the last successful read
+        self.last_error = ""
+        self.seeded = 0
+
+    # --- ingest ---------------------------------------------------------
+
+    def read_once(self):
+        """Read /data/aircraft.json once, merging every positioned aircraft into
+        `pending`. Returns the number of positioned aircraft seen.
+
+        A position in this file can be up to a minute old (readsb keeps an
+        aircraft listed for a while after its last position report), so the
+        observation time is `now - seen_pos`, not `now`. Recording a stale
+        position as heard-just-now would smear the timeline.
+        """
         _, _, trig = receiver_trig()
-        cells, n_chunks = read_chunks(trig)
-    except NoChunkHistory:
-        # Expected on dump1090-fa. Not a problem and not misconfiguration: the
-        # map just starts from now instead of from history.
-        print("seed: this feeder keeps no history, so the map starts from now "
-              "and builds as aircraft are heard")
-        return 0
-    except Exception as e:
-        # Feeder not up yet, network blip, whatever it is: polling still works,
-        # it just starts thinner. Not worth failing over.
-        sys.stderr.write("seed: history read skipped (%s)\n" % e)
-        return 0
-    if not cells:
-        return 0
-    if STORE_PATH:
-        _store_upsert(cells)
-    else:
-        with _pending_lock:
-            _merge_cells(_pending, cells)
-    why = "cold start" if not newest else "filling a %.0f min gap" % (gap / 60)
-    print("seed: %s, read %d chunks into %d cells of history" % (why, n_chunks, len(cells)))
-    return len(cells)
+        doc = _fetch_json(ULTRAFEEDER + "/data/aircraft.json", timeout=10)
+        now = float(doc.get("now") or time.time())
+        n = 0
+        with self.lock:
+            for ac in doc.get("aircraft", []):
+                lat, lon = ac.get("lat"), ac.get("lon")
+                if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                    continue
+                # alt_baro is the field tar1090's chunks carry, and "ground"
+                # reads as 0 ft. Fall back to alt_geom so an aircraft reporting
+                # only geometric altitude isn't silently filed at ground level.
+                alt = ac.get("alt_baro")
+                if alt is None:
+                    alt = ac.get("alt_geom")
+                seen = ac.get("seen_pos")
+                t = now - seen if isinstance(seen, (int, float)) else now
+                merge_obs(self.pending, trig, lat, lon, _alt_ft(alt), int(t))
+                n += 1
+        return n
+
+    def seed(self):
+        """Fill the store from tar1090 history once at startup, so the map does
+        not begin blank. Returns cells seeded.
+
+        Polling only knows what it has watched. On a first run that means an
+        empty map, which reads as "the tool is broken", and after downtime it
+        means a permanent hole. One history read covers both.
+
+        Skipped when the store already holds recent data, so a quick restart
+        does not re-read history it already has.
+
+        Non-fatal by design. dump1090-fa and dump1090-mutability have no
+        /chunks/ endpoint at all and polling works perfectly well without a
+        seed, so a failure here is reported and ignored rather than blocking
+        ingest. That is what makes those decoders usable.
+        """
+        newest = 0
+        if STORE_PATH and os.path.exists(STORE_PATH):
+            try:
+                con = _store_conn()
+                try:
+                    newest = con.execute("SELECT max(last_seen) FROM cells").fetchone()[0] or 0
+                finally:
+                    con.close()
+            except Exception as e:
+                sys.stderr.write("seed: could not read store (%s)\n" % e)
+        gap = time.time() - newest
+        if newest and gap < SEED_FRESH_SECS:
+            print("seed: store is current (%.0fs old), skipping history read" % gap)
+            return 0
+        try:
+            _, _, trig = receiver_trig()
+            cells, n_chunks = read_chunks(trig)
+        except NoChunkHistory:
+            # Expected on dump1090-fa. Not a problem and not misconfiguration:
+            # the map just starts from now instead of from history.
+            print("seed: this feeder keeps no history, so the map starts from now "
+                  "and builds as aircraft are heard")
+            return 0
+        except Exception as e:
+            # Feeder not up yet, network blip, whatever it is: polling still
+            # works, it just starts thinner. Not worth failing over.
+            sys.stderr.write("seed: history read skipped (%s)\n" % e)
+            return 0
+        if not cells:
+            return 0
+        if STORE_PATH:
+            _store_upsert(cells)
+        else:
+            with self.lock:
+                _merge_cells(self.pending, cells)
+        why = "cold start" if not newest else "filling a %.0f min gap" % (gap / 60)
+        print("seed: %s, read %d chunks into %d cells of history"
+              % (why, n_chunks, len(cells)))
+        return len(cells)
+
+    # --- writing --------------------------------------------------------
+
+    def flush(self):
+        """Move the accumulated batch into the store, returning cells written.
+
+        A no-op without a store: there, `pending` IS the accumulated coverage,
+        so draining it would throw the map away. If the write fails the batch
+        goes back rather than being lost.
+        """
+        if not STORE_PATH:
+            return 0
+        with self.lock:
+            if not self.pending:
+                return 0
+            batch, self.pending = self.pending, {}
+        try:
+            _store_upsert(batch)
+        except Exception:
+            with self.lock:
+                _merge_cells(batch, self.pending)
+                self.pending = batch
+            raise
+        self.last_flush = time.time()
+        return len(batch)
+
+    def snapshot(self):
+        """A copy of the pending cells, for the no-store path where they are the
+        entire map."""
+        with self.lock:
+            return dict(self.pending)
+
+    # --- lifecycle ------------------------------------------------------
+
+    def start(self):
+        threading.Thread(target=self._loop, name="adsbvue-poll", daemon=True).start()
+        print("ingest: polling %s/data/aircraft.json every %gs, flush every %gs"
+              % (ULTRAFEEDER, POLL_SECS, FLUSH_SECS))
+
+    def _loop(self):
+        """Read on the poll interval, write on the slower flush interval.
+
+        Seeds first. That happens here rather than in main() so a slow or
+        unreachable feeder delays ingest only, never the web server coming up.
+        """
+        self.started = time.time()
+        try:
+            self.seeded = self.seed()
+        except Exception as e:
+            sys.stderr.write("seed failed: %s\n" % e)
+        next_flush = time.time() + FLUSH_SECS
+        while True:
+            t0 = time.time()
+            try:
+                self.aircraft = self.read_once()
+                self.polls += 1
+                self.last_ok = t0
+                self.last_error = ""
+            except Exception as e:
+                self.errors += 1
+                self.last_error = str(e)
+                sys.stderr.write("aircraft.json poll failed: %s\n" % e)
+            if time.time() >= next_flush:
+                try:
+                    n = self.flush()
+                    if n:
+                        sys.stderr.write("poll: flushed %d cells to the store\n" % n)
+                except Exception as e:
+                    sys.stderr.write("poll: store flush failed: %s\n" % e)
+                next_flush = time.time() + FLUSH_SECS
+            # Sleep out the remainder of the interval so a slow read doesn't make
+            # the cadence drift longer and longer.
+            time.sleep(max(0.5, POLL_SECS - (time.time() - t0)))
+
+    # --- reporting ------------------------------------------------------
+
+    def health(self):
+        """Poller status for /health."""
+        last_ok = self.last_ok
+        # Age is measured from the last good read, or from thread start if there
+        # has never been one, so a poller that has never succeeded still goes
+        # stale rather than looking healthy forever.
+        since = time.time() - (last_ok or self.started or time.time())
+        out = {
+            "poll_secs": POLL_SECS,
+            "flush_secs": FLUSH_SECS,
+            "last_poll": int(last_ok) if last_ok else None,
+            "last_poll_iso": (time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(last_ok))
+                              if last_ok else None),
+            "last_poll_age_secs": round(since, 1),
+            "poll_ok": since < POLL_SECS * self.STALE_FACTOR,
+            "polls": self.polls,
+            "poll_errors": self.errors,
+            "aircraft": self.aircraft,
+            "pending_cells": len(self.pending),
+            "last_flush": int(self.last_flush) if self.last_flush else None,
+        }
+        if self.last_error:
+            out["last_error"] = self.last_error
+        return out
+
+
+POLLER = Poller()
 
 
 def build_points():
@@ -747,14 +762,13 @@ def build_points():
     rlat, rlon = receiver()
     # Land the newest polls before reading, so an explicit ?refresh=true is
     # never answered with data a whole flush interval stale.
-    flush_pending()
+    POLLER.flush()
 
     if STORE_PATH:
         _store_upsert({})         # empty batch, but this is what applies retention
         points, t_min, t_max = _store_read_all()
     else:
-        with _pending_lock:       # no store: _pending is the accumulated coverage
-            cells = dict(_pending)
+        cells = POLLER.snapshot()   # no store: pending IS the accumulated map
         points = [[r[BRG], r[DIST], r[ALT], r[FIRST_SEEN]] for r in cells.values()]
         times = [r[FIRST_SEEN] for r in cells.values() if r[FIRST_SEEN]]
         t_min = min(times) if times else 0
@@ -890,7 +904,7 @@ class Handler(BaseHTTPRequestHandler):
                 # are what tell an operator whether a dead map means a dead
                 # antenna or a dead reader.
                 body = {"ok": True}
-                body.update(poll_health())
+                body.update(POLLER.health())
                 self._send(200, json.dumps(body), "application/json")
             else:
                 self._send(404, json.dumps({"ok": False, "error": "not found"}),
@@ -954,7 +968,7 @@ def main():
         print("receiver: %.6f, %.6f" % (rlat, rlon))
     except Exception as e:
         print("warning: could not read receiver.json yet (%s)" % e)
-    start_poller()
+    POLLER.start()
     signal.signal(signal.SIGTERM, _on_term)
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print("listening on http://0.0.0.0:%d/  (view at /)" % PORT)
@@ -962,7 +976,7 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         try:
-            n = flush_pending()   # don't drop the last batch on a clean stop
+            n = POLLER.flush()    # don't drop the last batch on a clean stop
             if n:
                 print("flushed %d pending cells" % n)
         except Exception as e:

@@ -116,36 +116,48 @@ Config splits into two intentional categories in the source:
   them would be wrong or meaningless: `BEARING_BINS = 361` (0–360° inclusive),
   `GZIP_MIN_BYTES = 1400` (~one MTU), `NM_PER_DEG`, `FT_PER_NM`,
   `SEED_FRESH_SECS = 120` (a store newer than this needs no startup fill),
-  `POLL_STALE_FACTOR = 6` (missed reads before `/health` flags the poller stale).
+  `Poller.STALE_FACTOR = 6` (missed reads before `/health` flags it stale).
 
 Note that `PORT` is read as `ADSB_WEB_PORT` first and `ADSB_PORT` second. The
 Docker image deliberately pins **neither**: an image-level default for either
 name would outrank the *other* name set by the user, and their server would
 listen somewhere they never asked for. `server.py` defaults to 24556 on its own.
 
-### The poller
+### The poller (`class Poller`)
 
-A single daemon thread, started by `start_poller()`, doing three things in order.
+One instance, `POLLER`, owning a single daemon thread. All of the ingest state
+lives on it rather than in module globals: `pending`, its lock, and the counters
+`/health` reports. It is the only hand-written class in the file besides the
+stdlib-mandated `Handler`, which is deliberate, because it is the only part of
+the server with mutable state that a background thread and request threads both
+touch.
 
-- **`seed_from_chunks()`** runs first, once. It fills the store from history so
-  polling does not begin on a blank map, and refills after downtime. Skipped when
-  the store already holds data newer than `SEED_FRESH_SECS`, so a quick restart
-  costs nothing. Failure is logged and ignored, which is exactly what makes
-  chunk-less decoders work. It runs *here* rather than in `main()` so a slow or
-  unreachable feeder delays ingest only, never the web server binding its port.
+`POLLER.start()` launches `_loop()`, which does three things in order.
 
-- **`poll_once()`** reads `/data/aircraft.json` and merges each positioned
-  aircraft into `_pending`, an in-memory dict of cells not yet written.
+- **`seed()`** runs first, once. It fills the store from history so the map does
+  not begin blank, and refills after downtime. Skipped when the store already
+  holds data newer than `SEED_FRESH_SECS`, so a quick restart costs nothing.
+  Failure is reported and ignored, which is exactly what makes chunk-less
+  decoders work. It runs *here* rather than in `main()` so a slow or unreachable
+  feeder delays ingest only, never the web server binding its port.
 
-- **`flush_pending()`** moves `_pending` into SQLite every `FLUSH_SECS`. Batching
-  is the point: polling every 5 s but writing every 60 s is roughly 12× fewer
-  transactions, which matters for SD-card wear on a Pi. An unclean shutdown loses
-  at most one flush interval, which is nothing for a map built over days. A
-  failed write puts the batch back rather than dropping it.
+- **`read_once()`** reads `/data/aircraft.json` and merges each positioned
+  aircraft into `pending`, the cells not yet written.
 
-  Without `ADSB_DATA_DIR` there is nowhere to flush to, so `_pending` simply
+- **`flush()`** moves `pending` into SQLite every `FLUSH_SECS`. Batching is the
+  point: reading every 5 s but writing every 60 s is roughly 12× fewer
+  transactions, which matters for SD-card wear on a Pi. An unclean shutdown
+  loses at most one flush interval, which is nothing for a map built over days.
+  A failed write puts the batch back rather than dropping it.
+
+  Without `ADSB_DATA_DIR` there is nowhere to flush to, so `pending` simply
   keeps growing and *is* the accumulated coverage, lost on restart, matching how
-  the no-persistence path has always behaved.
+  the no-persistence path has always behaved. `snapshot()` is how `/cone` reads
+  it in that case.
+
+The instance shape is what removes the `global` statement the flush used to
+need, and turns what were string dict keys into attributes, so a typo is an
+error rather than a silently-created field nobody reads.
 
 `SIGTERM` is converted to `KeyboardInterrupt` so that `docker stop` runs the same
 shutdown flush as Ctrl-C, instead of dropping the last batch.
