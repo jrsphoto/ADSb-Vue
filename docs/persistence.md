@@ -37,18 +37,29 @@ One row per coverage cell, keyed by the coarse grid key `(klat, klon, kalt)`:
 | `first_seen` | earliest epoch the cell was heard — drives the timeline |
 | `last_seen` | latest epoch the cell was heard — used to merge and retain |
 
-### Merge on rebuild
+### Merge
 
-Each rebuild reads the recent chunks and de-duplicates them **in memory** first
-(fast — the same coarse-grid pass as before, now tracking `last_seen` too). Then
-the ~100k distinct cells of that window are **upserted** into the store in one
-transaction: new cell → insert; existing → keep `min(first_seen)` and
-`max(last_seen)`. The served payload is then the *whole accumulated set*
-(`SELECT` from the store), not just the read window. Reads of `/cone` still serve
-pre-serialized cached bytes, so they never touch the DB.
+Observations are de-duplicated **in memory** first (the coarse-grid pass, which
+also tracks `last_seen`), and only the distinct cells are **upserted** into the
+store in one transaction: new cell → insert; existing → keep `min(first_seen)`
+and `max(last_seen)`. Doing the heavy de-dup in memory keeps the DB writes cheap.
 
-Doing the heavy de-dup in memory and upserting only the distinct cells keeps the
-DB writes cheap (one transaction of ~100k rows per rebuild).
+*When* that upsert happens depends on `ADSB_INGEST`:
+
+- **`chunks`**: on each rebuild, so on a page load with an expired cache. The
+  window is ~100k distinct cells in one transaction.
+- **`poll` / `both`**: on a timer, every `ADSB_FLUSH_SECS` (default 60), from
+  the poller thread. Polls accumulate in memory in between, which is roughly 12×
+  fewer transactions than writing per poll and matters for SD-card wear on a Pi.
+  A crash loses at most one interval.
+
+Either way the served payload is the *whole accumulated set* (`SELECT` from the
+store), not just the read window, and `/cone` serves pre-serialized cached bytes
+so ordinary reads never touch the DB.
+
+Both ingest paths build cell keys through the same `merge_obs()`, so a cell
+seeded from history and later seen by a poll is one row, not two. That is what
+lets the startup fill and the poller share a store.
 
 ### Load on start
 

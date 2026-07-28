@@ -8,9 +8,12 @@ A standalone **3D volumetric view of your ADS-B antenna reception**, driven by a
 Ultrafeeder / tar1090 receiver. Inspired by the "detection cone" viewer, but with
 switchable render modes and a true volumetric density render.
 
-It reads tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
-`chunk_*.gz`), converts every aircraft observation to bearing / distance /
-altitude relative to the receiver, and serves a self-contained Three.js page.
+It converts every aircraft observation your receiver hears into bearing /
+distance / altitude relative to the antenna, and serves a self-contained
+Three.js page that renders the accumulated result. Observations come either
+from tar1090's rolling history chunks or from a background reader of the live
+aircraft list, which also works with dump1090-fa and dump1090-mutability. See
+[Ingest mode](#ingest-mode).
 
 > For a practical guide to using it as a diagnostic tool — antenna placement,
 > reception troubleshooting, before/after comparisons — see
@@ -314,7 +317,9 @@ needed**, and it survives every update and container recreation. See
 - `GET /cone`    — observations as JSON (`?refresh=true` bypasses the cache)
 - `GET /cities`  — optional local city labels (your `cities.local.json`, else `[]`)
 - `GET /hwt`     — cached HeyWhatsThat horizon rings (`{}` when no id is set)
-- `GET /health`  — liveness
+- `GET /health`  : liveness, and the ingest mode. In `poll`/`both` it also
+  reports how long ago the last successful read was (`last_poll_age_secs`) and a
+  `poll_ok` flag, so you can tell a stalled poller from a healthy one
 
 ## Run via Docker (recommended)
 
