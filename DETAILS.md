@@ -74,18 +74,13 @@ Two details that matter for correctness:
   is worse: without it an aircraft reporting only geometric altitude gets filed
   at 0 ft, a fake ground contact that drags the coverage floor down.
 
----|---|---|---|
-| `poll` (default) | yes, once | yes | yes |
-| `chunks` | n/a, reads history on demand | no, only on page load | no |
-| `both` | yes | yes, plus history on every rebuild | partially |
-
-`chunks` records **only at the moment a page loads**. There is no timer; a tab
-left open all day records nothing. That is what polling exists to fix.
-
-`both` catches slightly more than `poll` alone, because a fast aircraft can cross
-a grid cell in the gap between two polls, at the cost of much more feeder load.
-Measured over 16 hours on a live receiver, polling caught 93.8% of what the chunk
-path found and another 366k cells the chunk path never saw.
+These were once selectable ingest modes. They are not any more: reading history
+on demand recorded **only at the moment a page loaded**, with no timer, so a tab
+left open all day recorded nothing. Measured over 16 hours on a live receiver,
+polling caught 93.8% of everything that path found plus another 366k cells it
+never saw, while being lighter on the feeder. Keeping it as a fallback would
+have meant keeping the defect, so history is now the startup fill and nothing
+else.
 
 ---
 
@@ -277,7 +272,7 @@ the client accepts it and the body exceeds `GZIP_MIN_BYTES`.
 | `GET /cone` (`/data`) | the observation payload (`?refresh=true` bypasses cache) |
 | `GET /cities` | optional per-deployment city labels: `cities.local.json` if present next to `server.py`, else `[]` (never 404 → no console noise; invalid JSON → `[]`) |
 | `GET /hwt` | HeyWhatsThat horizon rings for `ADSB_HEYWHATSTHAT_ID`, fetched from their API once and cached (in memory + on the data volume); `{}` when unset or on failure (10-min retry backoff) |
-| `GET /health` | liveness, plus `ingest`; in poll modes also `last_poll`, `last_poll_age_secs`, `poll_ok`, `polls`, `poll_errors`, `aircraft`, `pending_cells` |
+| `GET /health` | liveness, plus `last_poll`, `last_poll_age_secs`, `poll_ok`, `polls`, `poll_errors`, `aircraft`, `pending_cells` |
 | `GET /adsbvue_favicon.png`, `/favicon.ico`, `/adsbvue_logo.png` | static assets |
 | `POST /_save?name=…` | debug-only: writes a posted canvas data-URL to `/tmp` (used for headless screenshot verification; harmless, unused by the app) |
 
