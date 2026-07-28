@@ -13,8 +13,11 @@ Observations come from one of two sources, selected by ADSB_INGEST:
           `chunk_*.gz`, gzip-compressed JSON), re-read on demand. Carries its
           own history, so a cold start is instantly populated.
   poll    a background thread reading `/data/aircraft.json` on a fixed
-          interval. No history, but it works against dump1090-fa as well as
-          tar1090 and its resolution does not depend on the feeder's config.
+          interval, recording continuously whether or not anyone has the page
+          open. Works against dump1090-fa as well as tar1090, and its
+          resolution does not depend on the feeder's config. It has no history
+          of its own, so at startup it reads the history chunks once to fill in
+          the map (skipped silently if the feeder has no /chunks/).
 
 Zero third-party dependencies — Python 3 standard library only.
 
@@ -31,7 +34,9 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_POLL_SECS     poll mode: seconds between aircraft.json reads (default 5)
   ADSB_FLUSH_SECS    poll mode: seconds between batched writes to the store
                      (default 60)
-  ADSB_MAX_CHUNKS    cap number of chunks read, newest-first (default 48, 0 = all)
+  ADSB_MAX_CHUNKS    cap number of chunks read, newest-first (default 48, 0 = all).
+                     In chunk mode this is paid on every rebuild; in poll mode
+                     it is a one-time startup seed, so a bigger value is cheap
   ADSB_CELL_NM       de-dup grid cell size, nm   (default 1.5)
   ADSB_ALT_BIN_FT    de-dup altitude bin, ft     (default 1000)
   ADSB_MAX_RANGE_NM  drop positions farther than this, nm (default 400)
@@ -566,8 +571,16 @@ def flush_pending():
 
 def _poll_loop():
     """Background ingest thread: read on the poll interval, write on the slower
-    flush interval."""
+    flush interval.
+
+    Seeds from history first. That runs here rather than in main() so a slow or
+    unreachable feeder delays ingest only, never the web server coming up.
+    """
     _poll["started"] = time.time()
+    try:
+        _poll["seeded"] = seed_from_chunks()
+    except Exception as e:
+        sys.stderr.write("seed failed: %s\n" % e)
     next_flush = time.time() + FLUSH_SECS
     while True:
         t0 = time.time()
@@ -654,6 +667,66 @@ def read_chunks(trig):
                     continue
                 merge_obs(cells, trig, lat, lon, _alt_ft(ac[1]), now_i)
     return cells, n_chunks
+
+
+SEED_FRESH_SECS = 120    # store newer than this: no gap worth a history read
+
+
+def seed_from_chunks():
+    """Fill the store from tar1090 history once at startup, so polling does not
+    begin from a blank map. Returns cells seeded.
+
+    Polling has no history of its own; it only knows what it has watched. On a
+    first run that means an empty map, which reads as "the tool is broken", and
+    after downtime it means a permanent hole. One history read at startup covers
+    both cases.
+
+    Skipped when the store already holds recent data, so a quick restart does
+    not re-read history it already has.
+
+    Non-fatal by design. dump1090-fa and dump1090-mutability have no /chunks/
+    endpoint at all, and polling works perfectly well without a seed, so a
+    failure here is logged and ignored rather than blocking ingest. That is what
+    makes those decoders usable.
+
+    ADSB_MAX_CHUNKS caps how far back this reads. In poll mode it is a one-time
+    startup cost rather than a per-rebuild one, so a larger value is much
+    cheaper here than it was on the chunk path.
+    """
+    if INGEST not in ("poll", "both"):
+        return 0
+    newest = 0
+    if STORE_PATH and os.path.exists(STORE_PATH):
+        try:
+            con = _store_conn()
+            try:
+                newest = con.execute("SELECT max(last_seen) FROM cells").fetchone()[0] or 0
+            finally:
+                con.close()
+        except Exception as e:
+            sys.stderr.write("seed: could not read store (%s)\n" % e)
+    gap = time.time() - newest
+    if newest and gap < SEED_FRESH_SECS:
+        print("seed: store is current (%.0fs old), skipping history read" % gap)
+        return 0
+    try:
+        _, _, trig = receiver_trig()
+        cells, n_chunks = read_chunks(trig)
+    except Exception as e:
+        # No /chunks/ (dump1090-fa), feeder not up yet, whatever it is: polling
+        # still works, it just starts thinner. Not worth failing over.
+        sys.stderr.write("seed: history read skipped (%s)\n" % e)
+        return 0
+    if not cells:
+        return 0
+    if STORE_PATH:
+        _store_upsert(cells)
+    else:
+        with _pending_lock:
+            _merge_cells(_pending, cells)
+    why = "cold start" if not newest else "filling a %.0f min gap" % (gap / 60)
+    print("seed: %s, read %d chunks into %d cells of history" % (why, n_chunks, len(cells)))
+    return len(cells)
 
 
 def build_points():
