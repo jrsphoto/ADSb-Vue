@@ -418,7 +418,11 @@ def seed_data_dir():
 
 
 def _store_conn():
-    con = sqlite3.connect(STORE_PATH)
+    # An explicit busy timeout rather than relying on the 5 s default: under WAL
+    # a reader never blocks the writer, but two writers still serialise, and the
+    # retention DELETE is a full table scan (~100 ms at 1.5M rows) that holds the
+    # write lock while it runs.
+    con = sqlite3.connect(STORE_PATH, timeout=30.0)
     con.execute("PRAGMA journal_mode=WAL")   # crash-safe, no full-file rewrites
     con.execute(
         "CREATE TABLE IF NOT EXISTS cells("
@@ -554,6 +558,8 @@ class Poller:
         self.aircraft = 0       # positioned aircraft in the last successful read
         self.last_error = ""
         self.seeded = 0
+        self._stop = threading.Event()
+        self._thread = None
 
     # --- ingest ---------------------------------------------------------
 
@@ -655,9 +661,11 @@ class Poller:
         if not STORE_PATH:
             return 0
         with self.lock:
-            if not self.pending:
-                return 0
             batch, self.pending = self.pending, {}
+        # Note this proceeds even when batch is empty. _store_upsert also applies
+        # retention, and a receiver that has gone quiet still needs its old cells
+        # aged out. Since /cone no longer does it, this is the only place it
+        # happens.
         try:
             _store_upsert(batch)
         except Exception:
@@ -669,17 +677,50 @@ class Poller:
         return len(batch)
 
     def snapshot(self):
-        """A copy of the pending cells, for the no-store path where they are the
-        entire map."""
+        """The pending cells as a finished payload triple, for the no-store path
+        where they are the entire map.
+
+        Projects inside the lock rather than handing back a dict. dict() is a
+        shallow copy, so the caller would still be holding the *same* mutable
+        [brg, dist, alt, first_seen, last_seen] lists the poller keeps updating.
+        Nothing could corrupt (only the two timestamps are ever mutated, and a
+        list-item assignment is atomic), but walking them twice outside the lock
+        meant a point's first_seen could disagree with the t_min derived from it.
+        One pass under the lock is both consistent and cheaper.
+        """
         with self.lock:
-            return dict(self.pending)
+            points, times = [], []
+            for r in self.pending.values():
+                points.append([r[BRG], r[DIST], r[ALT], r[FIRST_SEEN]])
+                if r[FIRST_SEEN]:
+                    times.append(r[FIRST_SEEN])
+        return points, (min(times) if times else 0), (max(times) if times else 0)
 
     # --- lifecycle ------------------------------------------------------
 
     def start(self):
-        threading.Thread(target=self._loop, name="adsbvue-poll", daemon=True).start()
+        self._thread = threading.Thread(target=self._loop, name="adsbvue-poll",
+                                        daemon=True)
+        self._thread.start()
         print("ingest: polling %s/data/aircraft.json every %gs, flush every %gs"
               % (ULTRAFEEDER, POLL_SECS, FLUSH_SECS))
+
+    def stop(self, timeout=10.0):
+        """Ask the thread to finish and wait for it. Returns True if it stopped.
+
+        Called before the final flush on shutdown. Without it the thread is a
+        daemon that keeps reading right up until the interpreter exits, so it
+        could add cells immediately *after* that last flush and lose them, up to
+        one poll interval's worth. Nothing corrupts either way (the drain is
+        atomic under the lock, and SQLite rolls back a transaction interrupted
+        at exit), but this makes shutdown deterministic rather than merely
+        survivable.
+        """
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout)
+            return not self._thread.is_alive()
+        return True
 
     def _loop(self):
         """Read on the poll interval, write on the slower flush interval.
@@ -693,7 +734,7 @@ class Poller:
         except Exception as e:
             sys.stderr.write("seed failed: %s\n" % e)
         next_flush = time.time() + FLUSH_SECS
-        while True:
+        while not self._stop.is_set():
             t0 = time.time()
             try:
                 self.aircraft = self.read_once()
@@ -712,9 +753,10 @@ class Poller:
                 except Exception as e:
                     sys.stderr.write("poll: store flush failed: %s\n" % e)
                 next_flush = time.time() + FLUSH_SECS
-            # Sleep out the remainder of the interval so a slow read doesn't make
-            # the cadence drift longer and longer.
-            time.sleep(max(0.5, POLL_SECS - (time.time() - t0)))
+            # Wait out the remainder of the interval so a slow read doesn't make
+            # the cadence drift longer and longer. Event.wait rather than sleep,
+            # so a shutdown does not have to sit through a whole interval.
+            self._stop.wait(max(0.5, POLL_SECS - (time.time() - t0)))
 
     # --- reporting ------------------------------------------------------
 
@@ -755,9 +797,15 @@ def build_points():
     recording. With ADSB_DATA_DIR set the payload is the whole accumulated
     store; without it, whatever the poller is holding in memory.
 
-    It is still worth single-flighting behind _build_lock, because a large
-    store means selecting a million-plus rows and then serialising and gzipping
-    them, which is not something two concurrent requests should both do.
+    It writes nothing. It used to call _store_upsert({}) here, whose only effect
+    with an empty batch was to redo the retention DELETE that the poller already
+    runs on every flush. That took the write lock for ~100 ms per page load at
+    1.5M rows, for nothing. With that gone /cone is a pure reader, and under WAL
+    a reader never contends with the poller's writes at all.
+
+    Still worth single-flighting behind _build_lock: a large store means
+    selecting a million-plus rows and then serialising and gzipping them, which
+    two concurrent requests should not both do.
     """
     rlat, rlon = receiver()
     # Land the newest polls before reading, so an explicit ?refresh=true is
@@ -765,14 +813,9 @@ def build_points():
     POLLER.flush()
 
     if STORE_PATH:
-        _store_upsert({})         # empty batch, but this is what applies retention
         points, t_min, t_max = _store_read_all()
     else:
-        cells = POLLER.snapshot()   # no store: pending IS the accumulated map
-        points = [[r[BRG], r[DIST], r[ALT], r[FIRST_SEEN]] for r in cells.values()]
-        times = [r[FIRST_SEEN] for r in cells.values() if r[FIRST_SEEN]]
-        t_min = min(times) if times else 0
-        t_max = max(times) if times else 0
+        points, t_min, t_max = POLLER.snapshot()   # no store: pending IS the map
     cone_all, cone_low = build_cones(points)
     return {
         "ok": True,
@@ -976,6 +1019,8 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         try:
+            if not POLLER.stop():   # quiesce ingest before the final write
+                sys.stderr.write("poller did not stop in time; flushing anyway\n")
             n = POLLER.flush()    # don't drop the last batch on a clean stop
             if n:
                 print("flushed %d pending cells" % n)

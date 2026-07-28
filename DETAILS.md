@@ -160,7 +160,14 @@ need, and turns what were string dict keys into attributes, so a typo is an
 error rather than a silently-created field nobody reads.
 
 `SIGTERM` is converted to `KeyboardInterrupt` so that `docker stop` runs the same
-shutdown flush as Ctrl-C, instead of dropping the last batch.
+shutdown as Ctrl-C instead of dropping the last batch. That shutdown is
+`POLLER.stop()` then `POLLER.flush()`, in that order: `stop()` sets an
+`Event` and joins the thread, so ingest has genuinely quiesced before the final
+write. Without it the thread keeps reading right up until the interpreter exits
+and could add cells *after* the last flush, losing up to one poll interval. The
+loop waits on that same `Event` rather than sleeping, so shutdown does not have
+to sit through a whole interval: measured at 0.01 s to exit with
+`ADSB_POLL_SECS=30`.
 
 `/cone` flushes before reading, so an explicit `?refresh=true` is never answered
 with data a flush interval stale.
@@ -231,6 +238,19 @@ and caches those bytes (`_cache["json"]`, `_cache["gz"]`). Every `GET /cone` the
 just writes pre-baked bytes — no per-request `json.dumps` over the whole point
 list, no per-request compression. `CACHE_SECS` controls staleness;
 `?refresh=true` forces a rebuild.
+
+**Only one thread ever writes to SQLite: the poller.** `build_points()` is a
+pure reader. It used to call `_store_upsert({})`, which with an empty batch did
+nothing except redo the retention `DELETE`, and that is a full table scan taking
+about 100 ms at 1.5M rows while holding the write lock. Doing that on every page
+load was pointless work and the only source of writer-versus-writer contention.
+Under WAL a reader never blocks the writer, so with it gone `/cone` and the
+poller do not contend at all.
+
+The consequence is that `Poller.flush()` must run even when nothing is pending,
+because `_store_upsert()` is also what applies retention, and a receiver that has
+gone quiet still needs its old cells aged out. Connections take an explicit
+30 s busy timeout rather than relying on the 5 s default.
 
 ### HTTP layer
 
