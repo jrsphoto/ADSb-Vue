@@ -8,16 +8,20 @@ relative to the receiver and serves both the raw point stream and a
 self-contained Three.js page that can render it as a point cloud, a density
 voxel volume, or a coverage-envelope shell.
 
-Observations come from one of two sources, selected by ADSB_INGEST:
-  chunks  tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
-          `chunk_*.gz`, gzip-compressed JSON), re-read on demand. Carries its
-          own history, so a cold start is instantly populated.
-  poll    a background thread reading `/data/aircraft.json` on a fixed
-          interval, recording continuously whether or not anyone has the page
-          open. Works against dump1090-fa as well as tar1090, and its
+Where observations come from is selected by ADSB_INGEST:
+  poll    (default) a background thread reading `/data/aircraft.json` on a
+          fixed interval, recording continuously whether or not anyone has the
+          page open. Every decoder serves that endpoint, so this works on
+          dump1090-fa and dump1090-mutability as well as tar1090, and its
           resolution does not depend on the feeder's config. It has no history
           of its own, so at startup it reads the history chunks once to fill in
-          the map (skipped silently if the feeder has no /chunks/).
+          the map, and again after downtime to fill the gap. A feeder with no
+          /chunks/ just starts from now.
+  chunks  tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
+          `chunk_*.gz`, gzip-compressed JSON), re-read on demand. Self-contained
+          history, but it records ONLY at the moment a page loads, and it needs
+          tar1090 specifically.
+  both    poll continuously and re-read history on every rebuild too.
 
 Zero third-party dependencies — Python 3 standard library only.
 
@@ -29,8 +33,8 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_WEB_PORT      web-UI port to listen on (default 24556; alias: ADSB_PORT).
                      NOT a data port — the ADS-B source is the URL in ADSB_ULTRAFEEDER
   ADSB_CACHE_SECS    seconds to cache parsed points (default 120)
-  ADSB_INGEST        where observations come from: chunks | poll | both
-                     (default chunks, the long-standing behaviour)
+  ADSB_INGEST        where observations come from: poll | chunks | both
+                     (default poll: the only mode every decoder supports)
   ADSB_POLL_SECS     poll mode: seconds between aircraft.json reads (default 5)
   ADSB_FLUSH_SECS    poll mode: seconds between batched writes to the store
                      (default 60)
@@ -72,6 +76,7 @@ import sqlite3
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -115,13 +120,15 @@ ULTRAFEEDER = os.environ.get("ADSB_ULTRAFEEDER", "http://127.0.0.1").rstrip("/")
 PORT = int(os.environ.get("ADSB_WEB_PORT", os.environ.get("ADSB_PORT", "24556")))
 CACHE_SECS = int(os.environ.get("ADSB_CACHE_SECS", "120"))
 # --- ingest source ---
-# "chunks" replays tar1090 history on demand; "poll" runs a background thread
-# reading aircraft.json; "both" seeds from history and keeps polling. Default is
-# "chunks" so an upgrade changes nothing until a site opts in.
-INGEST = os.environ.get("ADSB_INGEST", "chunks").strip().lower()
-if INGEST not in ("chunks", "poll", "both"):
-    sys.stderr.write("ADSB_INGEST=%r not one of chunks|poll|both; using chunks\n" % INGEST)
-    INGEST = "chunks"
+# "poll" runs a background thread reading aircraft.json and seeds from history at
+# startup; "chunks" is the older request-driven path that only records when a page
+# is loaded; "both" does each. Default is "poll" because it is the only mode that
+# works on every decoder: /data/aircraft.json is universal, while /chunks/ is
+# tar1090-only and absent on dump1090-fa and dump1090-mutability.
+INGEST = os.environ.get("ADSB_INGEST", "poll").strip().lower()
+if INGEST not in ("poll", "chunks", "both"):
+    sys.stderr.write("ADSB_INGEST=%r not one of poll|chunks|both; using poll\n" % INGEST)
+    INGEST = "poll"
 # Poll interval. An aircraft at 500 kt covers 0.139 nm/s, so a cell of CELL_NM is
 # crossed in CELL_NM / 0.139 seconds. Polling faster than that only re-reads
 # positions that de-dup into a cell already recorded. 5 s suits the 1.0-1.5 nm
@@ -642,6 +649,11 @@ def poll_health():
     return out
 
 
+class NoChunkHistory(Exception):
+    """The feeder serves no /chunks/ endpoint. Expected on dump1090-fa and
+    dump1090-mutability, which is exactly why poll mode is the default."""
+
+
 def read_chunks(trig):
     """Read the newest history chunks into a fresh cell dict.
 
@@ -649,7 +661,18 @@ def read_chunks(trig):
     it was heard — first_seen drives the timeline; last_seen drives store
     retention.
     """
-    idx = _fetch_json(ULTRAFEEDER + "/chunks/chunks.json")
+    try:
+        idx = _fetch_json(ULTRAFEEDER + "/chunks/chunks.json")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            # Almost always dump1090-fa or dump1090-mutability, which serve
+            # aircraft.json but have no history endpoint. Raised as its own type
+            # so each caller can say something useful: the seed treats it as a
+            # thinner start, chunk mode treats it as misconfiguration.
+            raise NoChunkHistory(
+                "no /chunks/ on %s: dump1090-fa and dump1090-mutability do not "
+                "provide one" % ULTRAFEEDER)
+        raise
     names = idx.get("chunks", [])
     if MAX_CHUNKS > 0:
         names = names[-MAX_CHUNKS:]
@@ -712,9 +735,15 @@ def seed_from_chunks():
     try:
         _, _, trig = receiver_trig()
         cells, n_chunks = read_chunks(trig)
+    except NoChunkHistory:
+        # Expected on dump1090-fa. Not a problem and not misconfiguration: the
+        # map just starts from now instead of from history.
+        print("seed: this feeder keeps no history, so the map starts from now "
+              "and builds as aircraft are heard")
+        return 0
     except Exception as e:
-        # No /chunks/ (dump1090-fa), feeder not up yet, whatever it is: polling
-        # still works, it just starts thinner. Not worth failing over.
+        # Feeder not up yet, network blip, whatever it is: polling still works,
+        # it just starts thinner. Not worth failing over.
         sys.stderr.write("seed: history read skipped (%s)\n" % e)
         return 0
     if not cells:
@@ -743,7 +772,17 @@ def build_points():
     cells = {}
     n_chunks = 0
     if INGEST in ("chunks", "both"):
-        cells, n_chunks = read_chunks(trig)
+        try:
+            cells, n_chunks = read_chunks(trig)
+        except NoChunkHistory as e:
+            if INGEST == "chunks":
+                # Chunks are the only source in this mode, so there is nothing
+                # to serve. Say what to do rather than surfacing a bare 404.
+                raise RuntimeError("%s. Set ADSB_INGEST=poll to read the live "
+                                   "aircraft list instead." % e)
+            # "both": the poller is still feeding the store, so a feeder without
+            # history is a smaller map, not a failure.
+            cells, n_chunks = {}, 0
     if INGEST in ("poll", "both"):
         # Get the newest polls into the store before reading it back, so an
         # explicit ?refresh=true isn't answered with data a flush interval old.
@@ -947,6 +986,15 @@ def main():
         print("receiver: %.6f, %.6f" % (rlat, rlon))
     except Exception as e:
         print("warning: could not read receiver.json yet (%s)" % e)
+    if INGEST == "chunks":
+        # Fail loudly at boot rather than with a 404 on the first page load.
+        try:
+            _fetch(ULTRAFEEDER + "/chunks/chunks.json", timeout=8)
+        except Exception as e:
+            print("warning: ADSB_INGEST=chunks but %s/chunks/ is not readable (%s)."
+                  % (ULTRAFEEDER, e))
+            print("         dump1090-fa and dump1090-mutability have no chunk files.")
+            print("         Set ADSB_INGEST=poll to read the live aircraft list instead.")
     start_poller()
     signal.signal(signal.SIGTERM, _on_term)
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

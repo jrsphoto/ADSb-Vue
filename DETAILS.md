@@ -77,8 +77,8 @@ Two details that matter for correctness:
 
 | `ADSB_INGEST` | history at startup | records continuously | works on dump1090-fa |
 |---|---|---|---|
-| `chunks` (default) | n/a, reads history on demand | no, only on page load | no |
-| `poll` | yes, once | yes | yes |
+| `poll` (default) | yes, once | yes | yes |
+| `chunks` | n/a, reads history on demand | no, only on page load | no |
 | `both` | yes | yes, plus history on every rebuild | partially |
 
 `chunks` records **only at the moment a page loads**. There is no timer; a tab

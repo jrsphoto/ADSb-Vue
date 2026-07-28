@@ -10,7 +10,7 @@ answers point in opposite directions, so check this first.
 
 ## Which mode are you in?
 
-### `ADSB_INGEST=poll` (or `both`)
+### `ADSB_INGEST=poll` (or `both`), the default
 
 Chunks are read **once, at startup**, to fill in the map so polling does not
 begin blank, and again after downtime to fill the gap. Ongoing recording is
@@ -31,7 +31,7 @@ The only reason to keep it low is if a slow first boot bothers you.
 where a low value means a three-hour outage recovers about twenty minutes of
 coverage.
 
-### `ADSB_INGEST=chunks` (the current default)
+### `ADSB_INGEST=chunks`
 
 Chunks are the ongoing source, re-read on every rebuild, which makes this the
 single biggest lever on ADSb-Vue's CPU and network cost. The right value
