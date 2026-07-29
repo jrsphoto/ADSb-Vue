@@ -100,6 +100,7 @@ environment variables:
 | `ADSB_BORDER_COLOR`| `#3f82b8`            | State border colour (hex)                 |
 | `ADSB_HOME_BORDER_COLOR`| `#6fd6c0`       | Home-state border colour (hex)            |
 | `ADSB_FOG_DENSITY` | `0.0012`             | Distance-fade density; `0` disables the fade |
+| `ADSB_MAP_BEHIND_CONE` | `false`          | Draw borders and city labels **behind** the coverage volume instead of over it. See [Map over or behind](#map-over-or-behind) |
 | `ADSB_DATA_DIR`    | *(unset)*            | Volume dir for long-term persistence (see below). Unset = no store. |
 | `ADSB_RETAIN_DAYS` | `30`                 | Store retention: drop cells not heard within N days (`0` = keep all) |
 | `ADSB_HEYWHATSTHAT_ID` | *(unset)*        | Your HeyWhatsThat panorama id — enables the HWT range-rings overlay |
@@ -112,6 +113,27 @@ Lower `ADSB_CELL_NM` for finer detail.
 set generously. `48` gives roughly six hours of history on a fresh install and
 the same amount of catch-up after downtime. See
 [choosing a value](docs/max_chunks.md).
+
+### Map over or behind
+
+Borders and city labels are normally drawn **over everything**, so they stay
+readable through the coverage volume. That is the long-standing look and it is
+still the default.
+
+It has one awkward side effect. Seen from a low side angle, the whole distant
+map squashes into a narrow band at the horizon, and that band lands across the
+middle of the cone, looking a bit like a mirage of the map floating inside it.
+The effect is strongest for coastal receivers, where there is far more coastline
+to pile into that band, and it gets no better with the distance fade on: fog
+dims the *colour* of those lines toward the background but cannot remove them,
+so they turn into dark smudges on the cone instead of disappearing.
+
+Set `ADSB_MAP_BEHIND_CONE=true` and the geography respects what is in front of
+it. Distant borders get tinted by the volume rather than stamped on top, and the
+distance fade dims them the way you would expect.
+
+The trade is that borders and labels are no longer guaranteed visible. Behind a
+solid cone they will be hidden. Try both and keep whichever you prefer.
 
 ### How it records
 

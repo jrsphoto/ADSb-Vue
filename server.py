@@ -47,6 +47,8 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_BORDER_COLOR  state border colour, hex (default #3f82b8)
   ADSB_HOME_BORDER_COLOR  home-state border colour, hex (default #6fd6c0)
   ADSB_FOG_DENSITY   distance-fade density (default 0.0012; 0 disables it)
+  ADSB_MAP_BEHIND_CONE  draw map borders and city labels behind the coverage
+                     volume instead of over it (default off)
   ADSB_DATA_DIR      persistence volume: if set, coverage accumulates in
                      <dir>/adsbvue.db across restarts, and cities.local.json is
                      read from <dir> first. Unset = no persistence (default).
@@ -139,6 +141,12 @@ _LOS_ANT_TERM = _LOS_K * math.sqrt(max(0.0, ANTENNA_ELEV_FT + ANTENNA_AGL_FT))
 BORDER_COLOR = os.environ.get("ADSB_BORDER_COLOR", "#3f82b8")        # state borders
 HOME_BORDER_COLOR = os.environ.get("ADSB_HOME_BORDER_COLOR", "#6fd6c0")  # home state(s), highlighted
 FOG_DENSITY = float(os.environ.get("ADSB_FOG_DENSITY", "0.0012"))   # distance fade; 0 disables it
+# Map borders and city labels are normally drawn over everything, so they stay
+# readable through the coverage volume. Seen from a low side angle that puts the
+# whole distant map, squashed into a band at the horizon, on top of the cone.
+# Setting this makes them respect what is in front of them instead. Off by
+# default because always-visible geography is the long-standing look.
+MAP_BEHIND_CONE = os.environ.get("ADSB_MAP_BEHIND_CONE", "false").lower() in ("1", "true", "yes", "on")
 # --- persistence (optional) ---
 DATA_DIR = os.environ.get("ADSB_DATA_DIR", "").strip()   # volume dir; unset = no store
 STORE_PATH = os.path.join(DATA_DIR, "adsbvue.db") if DATA_DIR else None
@@ -829,6 +837,7 @@ def build_points():
         "border_color": BORDER_COLOR,       # appearance (client uses these)
         "home_border_color": HOME_BORDER_COLOR,
         "fog_density": FOG_DENSITY,
+        "map_behind_cone": MAP_BEHIND_CONE,
         "count": len(points),
         "t_min": t_min,          # earliest / latest first-seen time in the window
         "t_max": t_max,          # (epoch seconds) — drives the timeline scrubber
