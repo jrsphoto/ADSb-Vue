@@ -1015,6 +1015,14 @@ function buildVoxelsReveal(pts) {
     transparent: true, opacity: displayOpacity, depthWrite: displayOpacity > 0.82 });
   const mesh = new THREE.InstancedMesh(box, mat, arr.length);
   mesh.userData.role = 'voxel';
+  // The reveal grows mesh.count every frame, but three.js computes an
+  // InstancedMesh's frustum-cull sphere ONCE, on first draw, and caches it. Here
+  // that first draw is at the window's start, when only the earliest cell or two
+  // exist, so the sphere freezes around a tiny blob. Zoom into the body of the
+  // volume and that blob leaves the view, so three.js culls the WHOLE mesh and the
+  // volume vanishes until playback ends. Skip culling: there's one such mesh and
+  // it's what the user is looking at, so there's nothing to save by culling it.
+  mesh.frustumCulled = false;
   const m = new THREE.Matrix4(), color = new THREE.Color();
   const times = new Float64Array(arr.length);
   arr.forEach((c, i) => {
