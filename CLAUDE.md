@@ -22,9 +22,11 @@ wins.
 
 ## Hosts and access
 
-SSH key auth is configured and non-interactive for skyscanner (`docker` group, no
-sudo). Do not ask whether you have access; run preflight to confirm. Host
-addresses live in `scripts/preflight.conf`.
+SSH key auth is configured and non-interactive for the deploy host (`docker`
+group, no sudo). Do not ask whether you have access; run preflight to confirm.
+The committed `scripts/preflight.conf` holds only generic defaults; real host
+addresses live in `~/.config/adsb-volume/preflight.local.conf`, outside the repo
+so every worktree finds it.
 
 ## Operational invariants
 
@@ -67,6 +69,8 @@ auto-updating.
 - A local `python3 server.py` binds a socket and does LAN egress, so the sandbox
   SIGSTKFLT-kills it unless it is launched with `dangerouslyDisableSandbox`.
   Always kill a dev server you started in the same session.
+- This deployment runs with the distance fade off (`ADSB_FOG_DENSITY=0`). Do not
+  suggest re-enabling it.
 
 ## Workflow
 

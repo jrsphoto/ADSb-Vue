@@ -15,8 +15,10 @@ Code session, stop and write it down here instead.
 | `deploy.sh` | Pull the freshly built image on the production host and recreate the container. |
 | `logs.sh` | Tail the production container's logs. |
 
-`preflight.conf` is **committed** here (not gitignored): a worktree that gets
-`preflight.sh` without it has a script and no definition of "healthy". It defines
-the host variables `deploy.sh` and `logs.sh` also read. Note the host names in it
-are private (RFC1918 / `.lan`, not internet-reachable), but committing it does
-publish them if this branch reaches public GitHub.
+`preflight.conf` is **committed** (not gitignored): a worktree that gets
+`preflight.sh` without it has a script and no definition of "healthy". It holds
+only generic defaults, so it is safe on a public repo. Your real hosts go in
+`~/.config/adsb-volume/preflight.local.conf`, outside the repo, which
+`preflight.sh` (and `deploy.sh` / `logs.sh`) source after it. It lives outside the
+repo rather than being gitignored so that every git worktree finds it; a gitignored
+file is absent from a fresh worktree checkout.

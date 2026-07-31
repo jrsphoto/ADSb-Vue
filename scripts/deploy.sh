@@ -6,8 +6,11 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source scripts/preflight.conf
+LOCAL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/adsb-volume/preflight.local.conf"
+[[ -f "$LOCAL_CONF" ]] && source "$LOCAL_CONF"
 
-: "${TARGET:?set TARGET=user@host in scripts/preflight.conf}"
+: "${TARGET:?set TARGET in ~/.config/adsb-volume/preflight.local.conf}"
+[[ "$TARGET" == "user@feeder.example" ]] && { echo "TARGET is still the placeholder; set it in $LOCAL_CONF"; exit 1; }
 : "${REMOTE_DIR:=/opt/adsbvue}"
 : "${CONTAINER:=adsbvue}"
 
