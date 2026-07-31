@@ -55,6 +55,9 @@ so every worktree finds it.
 
 ## Deploy shape
 
+Deployment is the Docker container only (currently the `ingest-poll` image);
+there is no systemd path, and no `adsbvue.service` unit. Do not add one.
+
 Deploy is a registry pull, not a file copy. CI builds the image on push to
 GitHub; on skyscanner, `cd /opt/adsbvue && docker compose pull && docker compose
 up -d`. Watchtower auto-update is DISABLED on the box (a compose label) while it

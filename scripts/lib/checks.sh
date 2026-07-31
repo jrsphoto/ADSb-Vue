@@ -75,25 +75,16 @@ check_http() {
   fi
 }
 
-# check_systemd_user <label> <user@host> <unit>
-check_systemd_user() {
-  local label="$1" target="$2" unit="$3" state
-  state=$(ssh $SSH_OPTS "$target" "systemctl --user is-active $unit" 2>/dev/null) || state="unreachable"
-  if [[ "$state" == "active" ]]; then
-    _pass "$label" "$unit active"
+# check_container <label> <user@host> <container>
+# Docker is the only supported deployment (there is no systemd path). Reports the
+# container's health status, or its plain running state if it has no healthcheck.
+check_container() {
+  local label="$1" target="$2" name="$3" state
+  state=$(ssh $SSH_OPTS "$target" "docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' '$name'" 2>/dev/null) || state="unreachable"
+  if [[ "$state" == "healthy" || "$state" == "running" ]]; then
+    _pass "$label" "$name $state"
   else
-    _fail "$label" "$unit is '$state'"
-  fi
-}
-
-# check_systemd_system <label> <user@host> <unit>
-check_systemd_system() {
-  local label="$1" target="$2" unit="$3" state
-  state=$(ssh $SSH_OPTS "$target" "systemctl is-active $unit" 2>/dev/null) || state="unreachable"
-  if [[ "$state" == "active" ]]; then
-    _pass "$label" "$unit active"
-  else
-    _fail "$label" "$unit is '$state'"
+    _fail "$label" "$name is '$state'"
   fi
 }
 
