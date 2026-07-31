@@ -4,9 +4,11 @@
 
 # ADSb-Vue
 
-A standalone **3D volumetric view of your ADS-B antenna reception**, driven by an
-Ultrafeeder / tar1090 receiver. Inspired by the "detection cone" viewer, but with
-switchable render modes and a true volumetric density render.
+A standalone **3D volumetric view of your ADS-B antenna reception**, driven by any
+dump1090-compatible feeder that serves `aircraft.json` (dump1090-fa,
+dump1090-mutability, readsb, or Ultrafeeder / tar1090). Inspired by the "detection
+cone" viewer, but with switchable render modes and a true volumetric density
+render.
 
 It converts every aircraft observation your receiver hears into bearing /
 distance / altitude relative to the antenna, and serves a self-contained

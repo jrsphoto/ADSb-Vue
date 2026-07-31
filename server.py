@@ -449,8 +449,8 @@ def _store_upsert(cells):
     """Upsert a batch of cells into the persistent store, keeping the earliest
     first_seen and the latest last_seen, then apply retention. One transaction.
 
-    Called both by a /cone rebuild (chunk mode) and by the background poller's
-    periodic flush, so it does the write and nothing else."""
+    Called by the background poller's periodic flush and by the startup seed, so
+    it does the write and nothing else."""
     con = _store_conn()
     try:
         with con:   # one transaction
@@ -514,8 +514,8 @@ def read_chunks(trig):
         if e.code == 404:
             # Almost always dump1090-fa or dump1090-mutability, which serve
             # aircraft.json but have no history endpoint. Raised as its own type
-            # so each caller can say something useful: the seed treats it as a
-            # thinner start, chunk mode treats it as misconfiguration.
+            # so the seed can treat it as a thinner start (build from now)
+            # rather than an error.
             raise NoChunkHistory(
                 "no /chunks/ on %s: dump1090-fa and dump1090-mutability do not "
                 "provide one" % ULTRAFEEDER)
