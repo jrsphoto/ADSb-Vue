@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Tail production logs. Existing so nobody has to remember the invocation.
+# Tail the production container's logs. Exists so nobody has to remember the
+# invocation. Optional first arg = how many lines of history (default 100).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-source scripts/preflight.conf.example 2>/dev/null || true
-: "${TARGET:?set TARGET=user@host}"
-: "${SERVICE:?set SERVICE=name.service}"
-exec ssh -t "$TARGET" "journalctl --user -u $SERVICE -f -n ${1:-100}"
+source scripts/preflight.conf
+: "${TARGET:?set TARGET=user@host in scripts/preflight.conf}"
+: "${CONTAINER:=adsbvue}"
+exec ssh -t "$TARGET" "docker logs -f --tail ${1:-100} '$CONTAINER'"

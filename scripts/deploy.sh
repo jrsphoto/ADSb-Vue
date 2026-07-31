@@ -1,29 +1,27 @@
 #!/usr/bin/env bash
-# Deploy to the production host. Refuses to run from a dirty tree or a branch
-# other than main, because the deployed artifact must be reproducible from a
-# commit hash. Override with FORCE=1 only when you know why.
+# Deploy = pull the freshly built image on the production host and recreate the
+# container. The image itself is built by CI on push to GitHub (see CLAUDE.md);
+# this does NOT copy local files, so what ships is whatever CI last built for the
+# tag the host's compose references. Host vars come from scripts/preflight.conf.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-source scripts/preflight.conf.example 2>/dev/null || true
+source scripts/preflight.conf
 
-: "${TARGET:?set TARGET=user@host in preflight.conf or the environment}"
-: "${SERVICE:?set SERVICE=name.service}"
-: "${REMOTE_DIR:=/opt/PROJECT}"
+: "${TARGET:?set TARGET=user@host in scripts/preflight.conf}"
+: "${REMOTE_DIR:=/opt/adsbvue}"
+: "${CONTAINER:=adsbvue}"
 
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [[ "${FORCE:-0}" != "1" ]]; then
-  [[ "$BRANCH" == "main" ]] || { echo "refusing: on branch $BRANCH, not main"; exit 1; }
-  [[ -z "$(git status --porcelain)" ]] || { echo "refusing: working tree dirty"; exit 1; }
-fi
+echo "deploying on $TARGET ($REMOTE_DIR): docker compose pull && up -d"
+ssh "$TARGET" "cd '$REMOTE_DIR' && docker compose pull && docker compose up -d"
 
-REV=$(git rev-parse --short HEAD)
-echo "deploying $REV to $TARGET"
-
-./scripts/check.sh
-rsync -az --delete target/release/ "$TARGET:$REMOTE_DIR/bin/"
-ssh "$TARGET" "systemctl --user restart $SERVICE"
-sleep 2
-ssh "$TARGET" "systemctl --user is-active $SERVICE"
-
-git tag -f "deployed-$(date +%Y%m%d-%H%M)" "$REV"
-echo "deployed $REV; tagged"
+echo "waiting for the container to come healthy..."
+state="?"
+for _ in $(seq 1 20); do
+  state=$(ssh "$TARGET" "docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' '$CONTAINER'" 2>/dev/null) || state="unreachable"
+  echo "  $state"
+  [[ "$state" == "healthy" || "$state" == "running" ]] && break
+  sleep 3
+done
+[[ "$state" == "healthy" || "$state" == "running" ]] || { echo "container is '$state'"; exit 1; }
+echo "deployed. Verify the served page if the change was user-facing:"
+echo "  curl -s $WEB_URL/ | grep -c fetchCone   # or whatever the change added"
