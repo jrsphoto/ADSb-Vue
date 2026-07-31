@@ -7,9 +7,9 @@ understand, modify, or extend the code. It assumes you've skimmed the
 The whole app is two files and no build step:
 
 - **`server.py`** — a zero-dependency (stdlib-only) HTTP server that turns your
-  receiver's history into a compact JSON API.
-- **`index.html`** — a single self-contained Three.js page that fetches that JSON
-  and renders it in WebGL.
+  receiver's coverage into a compact API (packed-binary `/cone`).
+- **`index.html`** — a single self-contained Three.js page that fetches that
+  payload and renders it in WebGL.
 
 ```mermaid
 flowchart LR
@@ -169,102 +169,83 @@ with data a flush interval stale.
 
 ### The build pipeline
 
-`build_points()` is the heart. It produces the payload dict the API serves, in
-one pass over every observation plus a small second pass for the cone. Its
-collaborators:
+By the time `/cone` is served the per-observation work is already done: the
+poller has been turning each aircraft into a grid cell and de-duplicating as the
+data arrived. `build_points()` is a reader that turns the accumulated cells into
+the payload dict. Its collaborators:
 
-- **`receiver()`** — the station's lat/lon. Env override, else auto-fetched once
-  from tar1090's `/data/receiver.json` and memoized.
+- **The ingest pass** lives in the poller (`read_once` calling `merge_obs`), not
+  here. For every positioned aircraft it computes a coarse grid key
+  `(round(lat/STEP), round(lon/STEP), alt // ALT_BIN_FT)` and, on a cell not seen
+  this pass, the great-circle bearing and haversine distance (`bearing_distance`;
+  the receiver `sin`/`cos` and lat/lon are constant for a run and hoisted out of
+  the per-row work). Positions past `MAX_RANGE_NM` are dropped as bad data or
+  MLAT noise. This is why the payload stays small: we build a coverage map, not a
+  traffic replay, so roughly 1.5 nm by 1000 ft cells collapse millions of raw
+  positions into a few hundred thousand distinct ones. Each cell keeps the
+  earliest time it was heard (`first_seen`), which drives the client timeline; the
+  store's `min`/`max(first_seen)` become `t_min`/`t_max`.
 
-- **`iter_chunks(names)`** — a generator that downloads + gunzips + `json.loads`
-  each chunk in a `ThreadPoolExecutor` (`FETCH_WORKERS` threads) and `yield`s the
-  parsed docs via `as_completed` as they land. This is the parallelism: on a
-  remote/high-latency feeder the serial round-trips dominate, and fanning them
-  out is a large win (~4–5× at ~80 ms/chunk). On the same host it's marginal —
-  there the cost is CPU-bound `json.loads` + the de-dup loop, which the GIL
-  serializes anyway. Failed chunks are logged and skipped.
+- **`receiver()`** reads the station lat/lon: env override, else fetched once from
+  `/data/receiver.json` and memoized.
 
-- **The de-dup pass** (inline in `build_points`) — for every aircraft row it
-  computes a coarse grid key `(round(lat/STEP), round(lon/STEP), alt // ALT_BIN_FT)`
-  and skips anything already in `seen`. This is the crux of why the payload stays
-  small: we're building a *coverage map*, not replaying traffic, so ~1.5 nm × 1000 ft
-  cells collapse millions of raw positions to a few hundred thousand distinct
-  ones regardless of how much history we read. The `seen`-check happens **before**
-  the trig, so ~90 % of rows cost nothing but a set lookup. Each kept point also
-  carries the **earliest time its cell was heard** (`t`, epoch seconds); `seen`
-  maps a cell to its point index so a later, earlier sighting can lower it. That
-  `t` is what drives the client's timeline (see *Timeline playback* below), and
-  the window's `min`/`max` become `t_min`/`t_max` in the payload.
+- **`iter_chunks(names)`** is used only by `seed()` at startup, never on the
+  `/cone` path. It downloads, gunzips, and parses history chunks in a
+  `ThreadPoolExecutor` so a cold start is not blank; the live path fetches no
+  chunks.
 
-- **`bearing_distance(sin1, cos1, rlat_r, rlon_r, alat, alon)`** — initial great-
-  circle bearing (0°=N) and haversine distance in nm. The receiver terms
-  (`sin`/`cos` of its latitude, its lat/lon in radians) are constant for a run,
-  so they're hoisted into `build_points` and passed in rather than recomputed per
-  row. Positions beyond `MAX_RANGE_NM` are dropped as bad data / MLAT noise.
-
-- **`build_cones(points)`** — a second, cheap pass over the *kept* points that
-  computes, per integer bearing, the farthest ground distance (`cone_all`) and
-  the farthest distance seen below `LOW_ALT_FT` (`cone_low`). It's a derived
-  statistic, so keeping it out of the hot de-dup loop reads more clearly and
-  costs nothing meaningful (~300 k iterations).
+- **`build_points()`** reads the whole accumulated store (`SELECT` from SQLite),
+  or the poller's in-memory `pending` when there is no store, runs the cheap
+  `build_cones()` pass over the kept points (per-bearing farthest distance overall
+  as `cone_all`, and below `LOW_ALT_FT` as `cone_low`), and returns the payload.
 
 The returned dict: `{ ok, ts, ultrafeeder, recv_lat, recv_lon, antenna_agl_ft,
-border_color, home_border_color, fog_density, count, chunks, t_min, t_max,
-points: [[brg, dist_nm, alt_ft, first_seen_epoch], ...], cone_all, cone_low }`.
-The last handful (`antenna_agl_ft`, `border_color`, `home_border_color`,
-`fog_density`) are pure config passthroughs the client reads for the terrain model
-and appearance; the server doesn't use them itself.
+border_color, home_border_color, fog_density, count, t_min, t_max, cone_all,
+cone_low, bin }`, plus the packed point columns described next. The appearance
+fields (`antenna_agl_ft`, `border_color`, `home_border_color`, `fog_density`) are
+pure passthroughs the client reads; the server does not use them itself.
+
+### The payload: packed binary, not JSON text
+
+The points dominate the payload, from a few hundred thousand to a few million
+cells, so they are sent as packed integer columns rather than JSON.
+`_encode_payload()` frames the body as a little-endian `uint32` length, a small
+JSON metadata header (the `bin` descriptor plus everything else in the dict
+above), then four contiguous columns: first-seen (`uint32` seconds from `t0`),
+bearing and distance (`uint16`, scaled by 10), altitude (`int16`, divided by 25).
+The browser reads these straight into typed arrays. Every scale is finer than the
+de-dup grid, so nothing is lost. This replaced a JSON `points: [[brg, dist, alt,
+t], ...]` array the server spent about 11 s serialising at a couple of million
+rows.
 
 ### Caching & concurrency
 
-`get_cone()` / `_ensure()` implement single-flight caching with **two** locks:
+`/cone` is served from a cache that a background thread (`_cache_refresher`)
+rebuilds every `CACHE_SECS`, so a page load never waits on a rebuild: it just
+writes pre-baked, pre-gzipped bytes (`_cache["raw"]`, `_cache["gz"]`). `_ensure()`
+builds inline only on a cold start (nothing cached yet) or an explicit
+`?refresh=true`; even then a `_build_lock` single-flights it and a re-check avoids
+repeating a rebuild the refresher just finished.
 
-- `_cache_lock` guards only the fast read/write of the cache dict.
-- `_build_lock` ensures just one thread rebuilds at a time.
+The build (`_rebuild_locked`) reads the store, packs the columns, and gzips, all
+off the request path. The parsed point list is dropped as soon as it is packed and
+is never cached. Building and packing that list is the memory peak to size a small
+Pi against, not the resting figure.
 
-The pattern is double-checked locking: read the cache under the fast lock and
-return immediately if it's fresh; otherwise take the build lock, re-check (a peer
-may have just rebuilt), and only then do the expensive `build_points()`. The
-expensive work runs **outside** the cache lock, so a cache-hit reader is never
-blocked behind an in-flight rebuild.
-
-Crucially, `_ensure` also **serializes and gzips the payload once per rebuild**
-and caches those bytes (`_cache["json"]`, `_cache["gz"]`). Every `GET /cone` then
-just writes pre-baked bytes — no per-request `json.dumps` over the whole point
-list, no per-request compression. `CACHE_SECS` controls staleness;
-`?refresh=true` forces a rebuild.
-
-**The parsed dict is deliberately not cached, and the reference is dropped as
-soon as it has been serialized.** A point is `[brg, dist, alt, first_seen]`,
-which costs about 196 bytes once you count the list object and the four boxed
-numbers, so at 1.5M cells the point list alone is ~310 MB of Python objects.
-Keeping it was pure waste: the only reader was a `get_cone()` helper with no
-callers. Measured against a real 1.59M-cell store, dropping it took resident
-memory from **472 MB to 115 MB** for a byte-identical payload.
-
-The *peak* during a rebuild is unchanged at ~490 MB, because the list still has
-to be built and serialized before it can be thrown away. That is the number to
-size a small Pi against, not the resting figure.
-
-**Only one thread ever writes to SQLite: the poller.** `build_points()` is a
-pure reader. It used to call `_store_upsert({})`, which with an empty batch did
-nothing except redo the retention `DELETE`, and that is a full table scan taking
-about 100 ms at 1.5M rows while holding the write lock. Doing that on every page
-load was pointless work and the only source of writer-versus-writer contention.
-Under WAL a reader never blocks the writer, so with it gone `/cone` and the
-poller do not contend at all.
-
-The consequence is that `Poller.flush()` must run even when nothing is pending,
-because `_store_upsert()` is also what applies retention, and a receiver that has
-gone quiet still needs its old cells aged out. Connections take an explicit
-30 s busy timeout rather than relying on the 5 s default.
+**Only one thread ever writes to SQLite: the poller.** `build_points()` is a pure
+reader, so under WAL it never contends with the poller's writes. Retention (the
+`DELETE` of cells whose `last_seen` is older than `RETAIN_DAYS`) is applied by the
+poller's `flush()`, which therefore runs even when nothing is pending, so a
+receiver that has gone quiet still ages out its old cells. Connections take an
+explicit 30 s busy timeout.
 
 ### HTTP layer
 
 A single `BaseHTTPRequestHandler`. `_send()` centralizes response writing and
-handles gzip: for `/cone` the handler passes the already-compressed bytes with
-`encoding="gzip"`; for other bodies (`index.html`) `_send` gzips on the fly when
-the client accepts it and the body exceeds `GZIP_MIN_BYTES`.
+handles gzip: for `/cone` the handler passes the already-compressed binary body
+(`application/octet-stream`) with `encoding="gzip"`; for other bodies
+(`index.html`) `_send` gzips on the fly when the client accepts it and the body
+exceeds `GZIP_MIN_BYTES`.
 
 | Route | Purpose |
 |---|---|
@@ -435,15 +416,19 @@ screenshot tooling struggles with a continuously-animating WebGL canvas.
 
 ## Performance decisions, in one place
 
-- **Coarse server-side de-dup** — the single biggest lever; bounds payload and
+- **Coarse de-dup in the poller** — the single biggest lever; bounds payload and
   render cost independent of history depth.
-- **Parallel chunk fetch** — hides feeder latency (`FETCH_WORKERS`).
-- **Serialize + gzip once per rebuild**, cache the bytes — requests are byte
-  copies, not re-serialization.
-- **Single-flight cache** with split read/build locks — reads never block a
-  rebuild.
-- **Hoisted receiver trig** and a `seen`-check-before-trig ordering — keep the
-  ~1.8 M-row hot loop lean.
+- **Packed-binary `/cone`** — points are integer columns, not JSON text, so the
+  browser reads typed arrays and the server builds them in about a tenth of the
+  time JSON took.
+- **Background cache refresh** — the payload is packed and gzipped once every
+  `CACHE_SECS` off the request path, so page loads are byte copies and never wait
+  on a rebuild.
+- **Parallel history fetch at startup only** — `seed()` fans chunk downloads out
+  across `FETCH_WORKERS` to hide feeder latency; the live path polls one
+  `aircraft.json`.
+- **Hoisted receiver trig** and a `seen`-check-before-trig ordering keep the
+  per-poll merge loop lean.
 - **Ping-pong flat buffers** in the cone smoother — no allocation churn per pass.
 
 ## Extending it

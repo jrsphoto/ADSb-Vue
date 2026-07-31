@@ -15,9 +15,7 @@ self-contained Three.js page (`index.html`). Deployed on skyscanner via Docker.
 
 ## Code is authority
 
-Read the code before trusting prose. In particular, `DETAILS.md` currently
-describes the OLD chunk-ingest path; the deployed service and the `ingest-poll`
-branch poll `aircraft.json` instead. When a doc and the code disagree, the code
+Read the code before trusting prose. When a doc and the code disagree, the code
 wins.
 
 ## Hosts and access
