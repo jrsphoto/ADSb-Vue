@@ -1,0 +1,44 @@
+# Preflight configuration. This is sourced by preflight.sh, so it is just
+# bash calling the check_* helpers in lib/checks.sh. Copy to preflight.conf
+# and edit for the project.
+#
+# Available checks:
+#   section <heading>
+#   check_cmd            <label> <binary> [args to print version]
+#   check_tcp            <label> <host> <port>
+#   check_ssh            <label> <user@host>
+#   check_http           <label> <url> [expected_status]
+#   check_systemd_user   <label> <user@host> <unit>
+#   check_systemd_system <label> <user@host> <unit>
+#   check_file           <label> <path>
+#   check_remote_file    <label> <user@host> <path>
+#   check_disk           <label> <path> <min_gb>
+#   check_git
+#   note                 <freeform text printed to the session>
+
+section "Toolchain"
+check_cmd "rust"        cargo --version
+check_cmd "ssh"         ssh -V
+check_cmd "curl"        curl --version
+
+section "Repository"
+check_git
+check_file "config" "config/default.toml"
+
+section "Hosts"
+# Real example shape. Replace with your own.
+# check_ssh "skymaster"  john@10.20.33.17
+# check_ssh "nomad"      john@10.20.40.202
+
+section "Services"
+# check_tcp            "soapy remote"   10.20.33.17 55132
+# check_http           "whisper health" http://10.20.40.202:8080/health
+# check_systemd_user   "daemon"         john@10.20.33.17 airband-ng.service
+
+section "Capacity"
+# check_disk "clip storage" /var/lib/example 20
+
+# Freeform reminders that belong with the live output rather than in CLAUDE.md,
+# because they are only true when the checks above pass.
+note "SSH is key-based and non-interactive. You do not need to ask for access."
+note "main is deployed. Branch for anything multi-session."
