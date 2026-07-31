@@ -13,3 +13,10 @@ cities.local.json
 *.db-shm
 # the recommended bind-mount location (./data:/data) inside the repo folder
 data/
+
+# Claude Code linked worktrees live here; never commit them
+.claude/worktrees/
+
+# Claude Code local, uncommitted memory / settings — keep personal context out
+CLAUDE.local.md
+.claude/settings.local.json
