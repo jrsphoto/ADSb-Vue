@@ -1425,7 +1425,7 @@ function wireUI() {
     if (recording || preparing) return;
     endPlaybackForEdit();
     btn.textContent = '⟳ Refreshing…'; btn.disabled = true;
-    fetch('./cone?refresh=true').then(r => r.json()).then(d => {
+    fetchCone('./cone?refresh=true').then(d => {
       DATA = d; setupTimeline(d); rebuild(); updateMeta(d);
       document.getElementById('cacheInfo').textContent = 'Live — fetched ' + new Date().toLocaleTimeString();
       btn.textContent = '↻ Refresh data'; btn.disabled = false;
@@ -2115,7 +2115,33 @@ async function toggleHWT() {
   } finally { btn.disabled = false; }
 }
 
-fetch('./cone').then(r => r.json()).then(d => {
+// Load /cone. The server sends the coverage as a small JSON header followed by
+// the points packed as integer columns (bearing, distance, altitude, first-seen),
+// so the browser reads ready-made number arrays instead of parsing tens of MB of
+// text. We expand them back into the [brg, dist, alt, first_seen] rows the rest of
+// the viewer already expects, so nothing downstream changes.
+async function fetchCone(url) {
+  const buf = await (await fetch(url)).arrayBuffer();
+  const dv = new DataView(buf);
+  const mlen = dv.getUint32(0, true);
+  const meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, mlen)));
+  const b = meta.bin;
+  if (b) {
+    let off = 4 + mlen;
+    const n = b.n;
+    const t = new Uint32Array(buf.slice(off, off + n * 4)); off += n * 4;
+    const brg = new Uint16Array(buf.slice(off, off + n * 2)); off += n * 2;
+    const dist = new Uint16Array(buf.slice(off, off + n * 2)); off += n * 2;
+    const alt = new Int16Array(buf.slice(off, off + n * 2)); off += n * 2;
+    const pts = new Array(n);
+    for (let i = 0; i < n; i++)
+      pts[i] = [brg[i] / b.brg_div, dist[i] / b.dist_div, alt[i] * b.alt_mul, b.t0 + t[i]];
+    meta.points = pts;
+  }
+  return meta;
+}
+
+fetchCone('./cone').then(d => {
   if (!d.ok) throw new Error(d.error || 'no data');
   initScene(d);
 }).catch(e => {

@@ -59,12 +59,14 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_HEYWHATSTHAT_ALTS_FT  ring altitudes, ft (default 10000,40000)
 """
 
+import array
 import gzip
 import json
 import math
 import os
 import signal
 import sqlite3
+import struct
 import sys
 import threading
 import time
@@ -173,7 +175,7 @@ _recv_lock = threading.Lock()    # never sees a half-written pair (poller + requ
 # json/gz = the payload serialized and compressed once per rebuild (see _ensure).
 # The parsed dict is deliberately NOT kept: nothing reads it, and at 1.5M cells
 # it is ~310 MB of Python objects.
-_cache = {"ts": 0.0, "json": None, "gz": None}
+_cache = {"ts": 0.0, "raw": None, "gz": None}
 _cache_lock = threading.Lock()   # guards the (fast) cache read/write only
 _build_lock = threading.Lock()   # single-flights the (slow) rebuild
 
@@ -847,53 +849,104 @@ def build_points():
     }
 
 
-def _fresh(snap, refresh):
-    return snap["json"] is not None and not refresh and (time.time() - snap["ts"]) < CACHE_SECS
+def _encode_payload(data):
+    """Frame the payload as: [uint32 little-endian meta-length][meta JSON][packed
+    point columns].
+
+    The points are sent as scaled-integer columns (a structure of arrays), not as
+    JSON text. The browser reads them straight into typed arrays instead of
+    parsing tens of megabytes of text, and the server builds them in about a
+    second instead of the eleven that json.dumps of a million-plus rows took.
+    Precision is kept far finer than the de-dup grid, so nothing is visibly lost:
+    bearing to 0.1 deg, distance to 0.1 nm, altitude to 25 ft, first-seen to 1 s.
+    Column order in the buffer is time (uint32), bearing, distance (uint16), then
+    altitude (int16); the client is told the scales and count in the meta header.
+    """
+    pts = data.pop("points")
+    n = len(pts)
+    t0 = data.get("t_min") or 0
+    tcol = array.array("I", (max(0, (p[3] or t0) - t0) for p in pts))               # seconds since t0
+    bcol = array.array("H", (min(65535, max(0, round(p[0] * 10))) for p in pts))    # bearing * 10
+    dcol = array.array("H", (min(65535, max(0, round(p[1] * 10))) for p in pts))    # distance nm * 10
+    acol = array.array("h", (max(-32768, min(32767, round(p[2] / 25))) for p in pts))  # altitude ft / 25
+    if sys.byteorder != "little":              # the wire format is little-endian
+        for col in (tcol, bcol, dcol, acol):
+            col.byteswap()
+    data["bin"] = {"n": n, "t0": t0, "brg_div": 10, "dist_div": 10, "alt_mul": 25,
+                   "order": "t_u32,brg_u16,dist_u16,alt_i16"}
+    meta = json.dumps(data).encode("utf-8")
+    return (struct.pack("<I", len(meta)) + meta
+            + tcol.tobytes() + bcol.tobytes() + dcol.tobytes() + acol.tobytes())
+
+
+def _rebuild_locked():
+    """Build, pack, and gzip the payload and swap it into the cache. The caller
+    must hold _build_lock so two rebuilds never overlap."""
+    data = build_points()
+    raw = _encode_payload(data)
+    del data
+    snap = {"ts": time.time(), "raw": raw, "gz": gzip.compress(raw, 6)}
+    with _cache_lock:
+        _cache.update(snap)
+    return snap
+
+
+def _rebuild_cache():
+    """Rebuild the cache from scratch. Used by the background refresher."""
+    with _build_lock:
+        return _rebuild_locked()
 
 
 def _ensure(refresh=False):
-    """Return a cache snapshot with the payload already serialized + gzipped.
+    """Return the current cached payload snapshot.
 
-    Serialization and compression happen once per rebuild here, not per request,
-    so hitting /cone from many tabs or a poller just re-sends the same bytes.
+    The background refresher (_cache_refresher) keeps the cache warm, so an
+    ordinary page load just reads the ready bytes and returns at once — it never
+    waits on a rebuild. Only a cold start (nothing cached yet) or an explicit
+    ?refresh=true rebuilds inline, and even then we re-check under the lock so we
+    don't repeat a rebuild the refresher just finished.
     """
     with _cache_lock:
         snap = dict(_cache)
-    if _fresh(snap, refresh):
+    if snap["raw"] is not None and not refresh:
         return snap
-    # Slow path: single-flight the rebuild. The expensive fetch/parse/serialize
-    # runs outside the cache lock, so concurrent cache-hit readers never block.
     with _build_lock:
         with _cache_lock:
             snap = dict(_cache)
-        if _fresh(snap, refresh):
+        if snap["raw"] is not None and not refresh:
             return snap
-        data = build_points()
-        raw = json.dumps(data).encode("utf-8")
-        # Drop the point list before allocating the gzip buffer. At 1.5M cells
-        # it is ~310 MB of Python objects ([brg, dist, alt, first_seen] costs
-        # ~196 bytes each once you count the list and the four boxed numbers),
-        # and everything downstream works from `raw`. Keeping it cached was
-        # costing that much for nothing: the only reader was get_cone(), which
-        # had no callers.
-        del data
-        snap = {"ts": time.time(), "json": raw, "gz": gzip.compress(raw, 6)}
-        with _cache_lock:
-            _cache.update(snap)
-        return snap
+        return _rebuild_locked()
+
+
+def _cache_refresher():
+    """Keep the /cone cache warm off the request path, so page loads never wait on
+    a rebuild. Builds once immediately (the first visitor gets a ready payload),
+    then rebuilds every CACHE_SECS. A failure — the feeder not being up yet at
+    startup, say — is logged and retried soon rather than left for a page load to
+    hit.
+    """
+    while True:
+        try:
+            _rebuild_cache()
+            time.sleep(CACHE_SECS)
+        except Exception as e:
+            sys.stderr.write("cache refresh failed: %s\n" % e)
+            time.sleep(5)
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
-    def _send(self, code, body, ctype, gz_ok=True, encoding=None):
+    def _send(self, code, body, ctype, gz_ok=True, encoding=None, cache_control=None):
         # encoding set => body is already compressed; just declare it. Otherwise
         # gzip on the fly for large-enough bodies the client accepts.
         if isinstance(body, str):
             body = body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         if encoding:
             self.send_header("Content-Encoding", encoding)
         elif gz_ok and "gzip" in self.headers.get("Accept-Encoding", "") and len(body) > GZIP_MIN_BYTES:
@@ -913,8 +966,13 @@ class Handler(BaseHTTPRequestHandler):
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
         try:
             if path in ("/", "/view", "/index.html"):
+                # no-cache so the browser always revalidates the page. Without it,
+                # after an update a browser can keep running an old index.html
+                # against the new server — and the page and the /cone data format
+                # have to match, so a stale page would fail to read the data.
                 with open(os.path.join(HERE, "index.html"), "rb") as fh:
-                    self._send(200, fh.read(), "text/html; charset=utf-8")
+                    self._send(200, fh.read(), "text/html; charset=utf-8",
+                               cache_control="no-cache")
             elif path in ("/adsbvue_favicon.png", "/favicon.ico", "/adsbvue_logo.png"):
                 name = "adsbvue_logo.png" if path.endswith("logo.png") else "adsbvue_favicon.png"
                 fp = os.path.join(HERE, name)
@@ -925,11 +983,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, b"", "application/octet-stream")
             elif path in ("/cone", "/data"):
                 snap = _ensure("refresh=true" in query)
-                # Pre-serialized + pre-gzipped at build time; just write the bytes.
+                # Packed binary (see _encode_payload), pre-gzipped at build time;
+                # just write the bytes.
                 if self._accepts_gzip():
-                    self._send(200, snap["gz"], "application/json", encoding="gzip")
+                    self._send(200, snap["gz"], "application/octet-stream", encoding="gzip")
                 else:
-                    self._send(200, snap["json"], "application/json", gz_ok=False)
+                    self._send(200, snap["raw"], "application/octet-stream", gz_ok=False)
             elif path == "/cities":
                 # Optional per-deployment city labels. A git-ignored
                 # cities.local.json (on the data volume if ADSB_DATA_DIR is set,
@@ -1026,6 +1085,9 @@ def main():
     except Exception as e:
         print("warning: could not read receiver.json yet (%s)" % e)
     POLLER.start()
+    # Build the /cone payload in the background and keep it warm, so page loads
+    # are served a ready copy instead of waiting on a rebuild.
+    threading.Thread(target=_cache_refresher, name="adsbvue-cache", daemon=True).start()
     signal.signal(signal.SIGTERM, _on_term)
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print("listening on http://0.0.0.0:%d/  (view at /)" % PORT)
