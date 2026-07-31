@@ -388,6 +388,12 @@ let modeGroup = null;                 // current render-mode object(s)
 let mode = 'voxel';
 const bands = { max: true, vhigh: true, high: true, mid: true, low: true };
 let displayOpacity = 0.32;   // 0..1 — "Solidity" slider (1 = solid object)
+// ADSB_MAP_BEHIND_CONE. Map borders and city labels normally ignore depth so
+// they stay readable through the volume. From a low side angle that paints the
+// whole distant map, squashed into a band at the horizon, on top of the cone.
+// When true they respect depth and draw in normal back-to-front order instead,
+// so the volume tints them and fog can actually dim them.
+let mapBehindCone = false;
 let smoothing = 0.5;         // 0..1 — "Smoothing" slider
 let tMin = 0, tMax = 0;      // timeline window bounds (epoch seconds)
 let playCut = 0;             // reveal cutoff: show points first seen at or before this
@@ -784,6 +790,7 @@ function initScene(data) {
 
   scene = new THREE.Scene();
   // Distance fade; ADSB_FOG_DENSITY=0 disables it (nothing dims as you zoom out).
+  mapBehindCone = !!data.map_behind_cone;
   const fogD = data.fog_density != null ? data.fog_density : 0.0012;
   if (fogD > 0) scene.fog = new THREE.FogExp2(0x06090f, fogD);
 
@@ -939,7 +946,7 @@ function initScene(data) {
 function updateMeta(d) {
   const maxAll = Math.max.apply(null, d.cone_all).toFixed(0);
   document.getElementById('meta').innerHTML =
-    d.count.toLocaleString() + ' obs &nbsp;|&nbsp; ' + d.chunks + ' chunks<br>' +
+    d.count.toLocaleString() + ' obs<br>' +
     'max range <b style="color:#4a8aaa">' + maxAll + ' nm</b>';
 }
 
@@ -1418,7 +1425,7 @@ function wireUI() {
     if (recording || preparing) return;
     endPlaybackForEdit();
     btn.textContent = '⟳ Refreshing…'; btn.disabled = true;
-    fetch('./cone?refresh=true').then(r => r.json()).then(d => {
+    fetchCone('./cone?refresh=true').then(d => {
       DATA = d; setupTimeline(d); rebuild(); updateMeta(d);
       document.getElementById('cacheInfo').textContent = 'Live — fetched ' + new Date().toLocaleTimeString();
       btn.textContent = '↻ Refresh data'; btn.disabled = false;
@@ -1552,7 +1559,7 @@ function textSprite(txt, color, px = 30) {
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = false;
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.85, depthTest: false }));
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.85, depthTest: mapBehindCone }));
   const h = 7;
   const w = Math.min(90, Math.max(14, (cv.width / cv.height) * h));
   sp.scale.set(w, h, 1);
@@ -1599,7 +1606,7 @@ async function loadStateMap(data) {
         color: home ? homeBorderCol : borderCol,
         transparent: true,
         opacity: home ? 0.5 : 0.36,
-        depthTest: false,
+        depthTest: mapBehindCone,
       });
       const mat = new THREE.LineBasicMaterial({
         color: home ? homeBorderCol : borderCol,
@@ -1621,10 +1628,12 @@ async function loadStateMap(data) {
         const geoOuter = new THREE.BufferGeometry().setFromPoints(outerPts);
         const geo = new THREE.BufferGeometry().setFromPoints(mainPts);
         const lOuter = new THREE.Line(geoOuter, matOuter);
-        lOuter.renderOrder = 4;
-        scene.add(lOuter);
         const lMain = new THREE.Line(geo, mat);
-        lMain.renderOrder = 5;
+        // Forcing these last is what stamps them over the volume at full
+        // strength. Leave the default order when the map should sit behind it,
+        // so the renderer draws far before near and the cone tints them.
+        if (!mapBehindCone) { lOuter.renderOrder = 4; lMain.renderOrder = 5; }
+        scene.add(lOuter);
         scene.add(lMain);
       }
     }
@@ -1641,7 +1650,7 @@ async function loadStateMap(data) {
       color: new THREE.Color(borderCol).lerp(new THREE.Color(homeBorderCol), 0.35),
       transparent: true,
       opacity: 0.62,
-      depthTest: false,
+      depthTest: mapBehindCone,
     });
     for (const feat of gj.features) {
       const props = feat.properties || {};
@@ -1655,7 +1664,7 @@ async function loadStateMap(data) {
         });
         const geo = new THREE.BufferGeometry().setFromPoints(pts);
         const line = new THREE.Line(geo, subMat);
-        line.renderOrder = 5;
+        if (!mapBehindCone) line.renderOrder = 5;
         scene.add(line);
       }
     }
@@ -2106,7 +2115,33 @@ async function toggleHWT() {
   } finally { btn.disabled = false; }
 }
 
-fetch('./cone').then(r => r.json()).then(d => {
+// Load /cone. The server sends the coverage as a small JSON header followed by
+// the points packed as integer columns (bearing, distance, altitude, first-seen),
+// so the browser reads ready-made number arrays instead of parsing tens of MB of
+// text. We expand them back into the [brg, dist, alt, first_seen] rows the rest of
+// the viewer already expects, so nothing downstream changes.
+async function fetchCone(url) {
+  const buf = await (await fetch(url)).arrayBuffer();
+  const dv = new DataView(buf);
+  const mlen = dv.getUint32(0, true);
+  const meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, mlen)));
+  const b = meta.bin;
+  if (b) {
+    let off = 4 + mlen;
+    const n = b.n;
+    const t = new Uint32Array(buf.slice(off, off + n * 4)); off += n * 4;
+    const brg = new Uint16Array(buf.slice(off, off + n * 2)); off += n * 2;
+    const dist = new Uint16Array(buf.slice(off, off + n * 2)); off += n * 2;
+    const alt = new Int16Array(buf.slice(off, off + n * 2)); off += n * 2;
+    const pts = new Array(n);
+    for (let i = 0; i < n; i++)
+      pts[i] = [brg[i] / b.brg_div, dist[i] / b.dist_div, alt[i] * b.alt_mul, b.t0 + t[i]];
+    meta.points = pts;
+  }
+  return meta;
+}
+
+fetchCone('./cone').then(d => {
   if (!d.ok) throw new Error(d.error || 'no data');
   initScene(d);
 }).catch(e => {

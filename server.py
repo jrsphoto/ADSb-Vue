@@ -3,12 +3,19 @@
 ADSb-Vue — a standalone 3D volumetric antenna-reception viewer for an
 Ultrafeeder / tar1090 ADS-B receiver.
 
-It reads tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
-`chunk_*.gz`, which are gzip-compressed JSON), converts every aircraft
-observation to (bearing, distance, altitude) relative to the receiver, and
-serves both the raw point stream and a self-contained Three.js page that can
-render it as a point cloud, a density voxel volume, or a coverage-envelope
-shell.
+It converts every aircraft observation to (bearing, distance, altitude)
+relative to the receiver and serves both the raw point stream and a
+self-contained Three.js page that can render it as a point cloud, a density
+voxel volume, or a coverage-envelope shell.
+
+Ingest is a background thread reading `/data/aircraft.json` every few seconds.
+It records continuously, whether or not anyone has the page open. Every decoder
+serves that endpoint, so this works with dump1090-fa and dump1090-mutability as
+well as tar1090, and the resolution does not depend on the feeder's config.
+
+Polling has no history of its own, so at startup it reads tar1090's history
+chunks once to fill in the map, and again after downtime to fill the gap. A
+feeder with no /chunks/ simply starts from now.
 
 Zero third-party dependencies — Python 3 standard library only.
 
@@ -20,7 +27,10 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_WEB_PORT      web-UI port to listen on (default 24556; alias: ADSB_PORT).
                      NOT a data port — the ADS-B source is the URL in ADSB_ULTRAFEEDER
   ADSB_CACHE_SECS    seconds to cache parsed points (default 120)
-  ADSB_MAX_CHUNKS    cap number of chunks read, newest-first (default 48, 0 = all)
+  ADSB_POLL_SECS     seconds between aircraft.json reads (default 5)
+  ADSB_FLUSH_SECS    seconds between batched writes to the store (default 60)
+  ADSB_MAX_CHUNKS    how much history the startup fill reads, newest-first
+                     (default 48, 0 = all). A one-time cost, so bigger is cheap
   ADSB_CELL_NM       de-dup grid cell size, nm   (default 1.5)
   ADSB_ALT_BIN_FT    de-dup altitude bin, ft     (default 1000)
   ADSB_MAX_RANGE_NM  drop positions farther than this, nm (default 400)
@@ -37,6 +47,8 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_BORDER_COLOR  state border colour, hex (default #3f82b8)
   ADSB_HOME_BORDER_COLOR  home-state border colour, hex (default #6fd6c0)
   ADSB_FOG_DENSITY   distance-fade density (default 0.0012; 0 disables it)
+  ADSB_MAP_BEHIND_CONE  draw map borders and city labels behind the coverage
+                     volume instead of over it (default off)
   ADSB_DATA_DIR      persistence volume: if set, coverage accumulates in
                      <dir>/adsbvue.db across restarts, and cities.local.json is
                      read from <dir> first. Unset = no persistence (default).
@@ -47,14 +59,18 @@ Config via environment variables (or a .env file next to server.py — see
   ADSB_HEYWHATSTHAT_ALTS_FT  ring altitudes, ft (default 10000,40000)
 """
 
+import array
 import gzip
 import json
 import math
 import os
+import signal
 import sqlite3
+import struct
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -97,6 +113,16 @@ ULTRAFEEDER = os.environ.get("ADSB_ULTRAFEEDER", "http://127.0.0.1").rstrip("/")
 # name; ADSB_PORT is still honoured for back-compat.
 PORT = int(os.environ.get("ADSB_WEB_PORT", os.environ.get("ADSB_PORT", "24556")))
 CACHE_SECS = int(os.environ.get("ADSB_CACHE_SECS", "120"))
+# Poll interval. An aircraft at 500 kt covers 0.139 nm/s, so a cell of CELL_NM is
+# crossed in CELL_NM / 0.139 seconds. Polling faster than that only re-reads
+# positions that de-dup into a cell already recorded. 5 s suits the 1.0-1.5 nm
+# cell sizes people actually run; raise it for a coarser grid or a busy Pi.
+POLL_SECS = float(os.environ.get("ADSB_POLL_SECS", "5"))
+# Write batching. Polls accumulate in memory and land in SQLite every
+# FLUSH_SECS, which at the defaults is ~12x fewer transactions than writing per
+# poll, which is worth doing on a Pi's SD card. An unclean shutdown loses at
+# most this many seconds of coverage, nothing for a map that builds over days.
+FLUSH_SECS = float(os.environ.get("ADSB_FLUSH_SECS", "60"))
 MAX_CHUNKS = int(os.environ.get("ADSB_MAX_CHUNKS", "48"))         # newest-first, 0=all
 CELL_NM = float(os.environ.get("ADSB_CELL_NM", "1.5"))           # de-dup cell size (nm)
 ALT_BIN_FT = float(os.environ.get("ADSB_ALT_BIN_FT", "1000"))    # de-dup alt bin (ft)
@@ -117,6 +143,12 @@ _LOS_ANT_TERM = _LOS_K * math.sqrt(max(0.0, ANTENNA_ELEV_FT + ANTENNA_AGL_FT))
 BORDER_COLOR = os.environ.get("ADSB_BORDER_COLOR", "#3f82b8")        # state borders
 HOME_BORDER_COLOR = os.environ.get("ADSB_HOME_BORDER_COLOR", "#6fd6c0")  # home state(s), highlighted
 FOG_DENSITY = float(os.environ.get("ADSB_FOG_DENSITY", "0.0012"))   # distance fade; 0 disables it
+# Map borders and city labels are normally drawn over everything, so they stay
+# readable through the coverage volume. Seen from a low side angle that puts the
+# whole distant map, squashed into a band at the horizon, on top of the cone.
+# Setting this makes them respect what is in front of them instead. Off by
+# default because always-visible geography is the long-standing look.
+MAP_BEHIND_CONE = os.environ.get("ADSB_MAP_BEHIND_CONE", "false").lower() in ("1", "true", "yes", "on")
 # --- persistence (optional) ---
 DATA_DIR = os.environ.get("ADSB_DATA_DIR", "").strip()   # volume dir; unset = no store
 STORE_PATH = os.path.join(DATA_DIR, "adsbvue.db") if DATA_DIR else None
@@ -138,9 +170,12 @@ GZIP_MIN_BYTES = 1400       # ~one MTU; not worth the CPU to compress smaller re
 # internal accumulator (used to merge/retain in the persistent store).
 BRG, DIST, ALT, FIRST_SEEN, LAST_SEEN = 0, 1, 2, 3, 4
 
-_recv = {"lat": None, "lon": None}
-# data = parsed dict; json/gz = payload serialized once per rebuild (see _ensure)
-_cache = {"ts": 0.0, "data": None, "json": None, "gz": None}
+_recv = {"pos": None}            # (lat, lon) once resolved; one tuple, so a reader
+_recv_lock = threading.Lock()    # never sees a half-written pair (poller + requests)
+# json/gz = the payload serialized and compressed once per rebuild (see _ensure).
+# The parsed dict is deliberately NOT kept: nothing reads it, and at 1.5M cells
+# it is ~310 MB of Python objects.
+_cache = {"ts": 0.0, "raw": None, "gz": None}
 _cache_lock = threading.Lock()   # guards the (fast) cache read/write only
 _build_lock = threading.Lock()   # single-flights the (slow) rebuild
 
@@ -163,16 +198,30 @@ def _load_chunk(name):
 
 def receiver():
     """Receiver lat/lon: env override, else tar1090 /data/receiver.json."""
-    if _recv["lat"] is not None:
-        return _recv["lat"], _recv["lon"]
+    pos = _recv["pos"]
+    if pos is not None:
+        return pos
     lat = os.environ.get("ADSB_RECV_LAT")
     lon = os.environ.get("ADSB_RECV_LON")
     if lat and lon:
-        _recv["lat"], _recv["lon"] = float(lat), float(lon)
-        return _recv["lat"], _recv["lon"]
-    rj = _fetch_json(ULTRAFEEDER + "/data/receiver.json")
-    _recv["lat"], _recv["lon"] = float(rj["lat"]), float(rj["lon"])
-    return _recv["lat"], _recv["lon"]
+        pos = (float(lat), float(lon))
+    else:
+        rj = _fetch_json(ULTRAFEEDER + "/data/receiver.json")
+        pos = (float(rj["lat"]), float(rj["lon"]))
+    with _recv_lock:
+        _recv["pos"] = pos
+    return pos
+
+
+def receiver_trig():
+    """Receiver position plus the trig terms every conversion needs.
+
+    sin/cos of the receiver latitude and its lat/lon in radians are constant for
+    a run, so they're computed here once per ingest pass rather than per row.
+    """
+    rlat, rlon = receiver()
+    rlat_r, rlon_r = math.radians(rlat), math.radians(rlon)
+    return rlat, rlon, (math.sin(rlat_r), math.cos(rlat_r), rlat_r, rlon_r)
 
 
 def bearing_distance(sin1, cos1, rlat_r, rlon_r, alat, alon):
@@ -201,6 +250,39 @@ def _alt_ft(v):
     if isinstance(v, (int, float)):
         return float(v)
     return 0.0  # "ground" / null
+
+
+def merge_obs(cells, trig, lat, lon, alt, now_i):
+    """De-duplicate one observation onto the coarse coverage grid.
+
+    Both ingest paths go through here, so a cell key means exactly the same
+    thing whether the observation arrived in a history chunk or a live
+    aircraft.json poll. The two sources have to be able to share a store.
+
+    `cells` maps grid-cell coords -> [brg, dist, alt, first_seen, last_seen]:
+    lat/lon rounded to STEP-sized cells, altitude bucketed into ALT_BIN_FT bins.
+    A cell already present is only re-timed; the trig is skipped entirely.
+    """
+    key = (round(lat / STEP), round(lon / STEP), int(alt // ALT_BIN_FT))
+    rec = cells.get(key)
+    if rec is not None:                 # already have this cell —
+        if now_i:
+            if now_i < rec[FIRST_SEEN]:
+                rec[FIRST_SEEN] = now_i
+            if now_i > rec[LAST_SEEN]:
+                rec[LAST_SEEN] = now_i
+        return
+    sin1, cos1, rlat_r, rlon_r = trig
+    brg, dist = bearing_distance(sin1, cos1, rlat_r, rlon_r, lat, lon)
+    if dist > MAX_RANGE_NM:   # discard obvious bad positions
+        return
+    # Optional 4/3-earth LOS filter: an aircraft at `alt` can't be heard farther
+    # than 1.23 * (sqrt(alt) + sqrt(antenna_MSL)) * 1.15 nm. Weak decodes with
+    # bit-corrupted altitude fields land in low bins at physically impossible
+    # distances — this rejects them at ingest.
+    if LOS_FILTER and dist > _LOS_K * math.sqrt(max(0.0, alt)) + _LOS_ANT_TERM:
+        return
+    cells[key] = [round(brg, 1), round(dist, 2), int(alt), now_i, now_i]
 
 
 def iter_chunks(names):
@@ -348,7 +430,11 @@ def seed_data_dir():
 
 
 def _store_conn():
-    con = sqlite3.connect(STORE_PATH)
+    # An explicit busy timeout rather than relying on the 5 s default: under WAL
+    # a reader never blocks the writer, but two writers still serialise, and the
+    # retention DELETE is a full table scan (~100 ms at 1.5M rows) that holds the
+    # write lock while it runs.
+    con = sqlite3.connect(STORE_PATH, timeout=30.0)
     con.execute("PRAGMA journal_mode=WAL")   # crash-safe, no full-file rewrites
     con.execute(
         "CREATE TABLE IF NOT EXISTS cells("
@@ -359,10 +445,12 @@ def _store_conn():
     return con
 
 
-def _store_merge(cells):
-    """Upsert this window's cells into the persistent store (keep earliest
-    first_seen, latest last_seen) and return the whole accumulated coverage as
-    [brg, dist, alt, first_seen] points plus the first-seen span."""
+def _store_upsert(cells):
+    """Upsert a batch of cells into the persistent store, keeping the earliest
+    first_seen and the latest last_seen, then apply retention. One transaction.
+
+    Called both by a /cone rebuild (chunk mode) and by the background poller's
+    periodic flush, so it does the write and nothing else."""
     con = _store_conn()
     try:
         with con:   # one transaction
@@ -377,6 +465,15 @@ def _store_merge(cells):
             if RETAIN_DAYS > 0:   # rolling window: drop cells not heard recently
                 cutoff = int(time.time()) - RETAIN_DAYS * 86400
                 con.execute("DELETE FROM cells WHERE last_seen < ?", (cutoff,))
+    finally:
+        con.close()
+
+
+def _store_read_all():
+    """The whole accumulated coverage as [brg, dist, alt, first_seen] points,
+    plus the first-seen span."""
+    con = _store_conn()
+    try:
         points = [[b, d, a, fs] for (b, d, a, fs)
                   in con.execute("SELECT brg,dist,alt,first_seen FROM cells")]
         lo, hi = con.execute(
@@ -386,28 +483,48 @@ def _store_merge(cells):
     return points, lo or 0, hi or 0
 
 
-def build_points():
-    """Read recent-history chunks and return the cone payload: de-duplicated
-    observations as [bearing, distance_nm, altitude_ft, first_seen_epoch], plus
-    per-bearing reach. With ADSB_DATA_DIR set, coverage is merged into a
-    persistent store and the payload is the whole accumulated set, not just this
-    read window."""
-    rlat, rlon = receiver()
-    # Receiver terms are constant for the whole run — compute once, not per row.
-    rlat_r, rlon_r = math.radians(rlat), math.radians(rlon)
-    sin1, cos1 = math.sin(rlat_r), math.cos(rlat_r)
-    idx = _fetch_json(ULTRAFEEDER + "/chunks/chunks.json")
+def _merge_cells(dst, src):
+    """Fold src's cells into dst, widening each cell's first/last-seen span."""
+    for key, r in src.items():
+        cur = dst.get(key)
+        if cur is None:
+            dst[key] = list(r)
+            continue
+        if r[FIRST_SEEN] and (not cur[FIRST_SEEN] or r[FIRST_SEEN] < cur[FIRST_SEEN]):
+            cur[FIRST_SEEN] = r[FIRST_SEEN]
+        if r[LAST_SEEN] > cur[LAST_SEEN]:
+            cur[LAST_SEEN] = r[LAST_SEEN]
+
+
+class NoChunkHistory(Exception):
+    """The feeder serves no /chunks/ endpoint. Expected on dump1090-fa and
+    dump1090-mutability, which is exactly why poll mode is the default."""
+
+
+def read_chunks(trig):
+    """Read the newest history chunks into a fresh cell dict.
+
+    Returns (cells, chunks_read). Each cell tracks the earliest and latest time
+    it was heard — first_seen drives the timeline; last_seen drives store
+    retention.
+    """
+    try:
+        idx = _fetch_json(ULTRAFEEDER + "/chunks/chunks.json")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            # Almost always dump1090-fa or dump1090-mutability, which serve
+            # aircraft.json but have no history endpoint. Raised as its own type
+            # so each caller can say something useful: the seed treats it as a
+            # thinner start, chunk mode treats it as misconfiguration.
+            raise NoChunkHistory(
+                "no /chunks/ on %s: dump1090-fa and dump1090-mutability do not "
+                "provide one" % ULTRAFEEDER)
+        raise
     names = idx.get("chunks", [])
     if MAX_CHUNKS > 0:
         names = names[-MAX_CHUNKS:]
-
     cells = {}        # grid-cell coords -> [brg, dist, alt, first_seen, last_seen]
     n_chunks = 0
-    # Single pass over every observation: de-duplicate onto a coarse grid (this is
-    # a coverage map, not a traffic replay) and convert each kept hit to
-    # receiver-relative polar coordinates. Each cell tracks the earliest and latest
-    # time it was heard — first_seen drives the timeline; last_seen is used to
-    # merge/retain in the persistent store.
     for doc in iter_chunks(names):
         n_chunks += 1
         for f in doc.get("files", []):
@@ -418,36 +535,299 @@ def build_points():
                 lat, lon = ac[4], ac[5]
                 if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
                     continue
-                alt = _alt_ft(ac[1])
-                # Grid-cell coordinates, not raw lat/lon: lat/lon rounded to STEP-sized
-                # cells and altitude bucketed into ALT_BIN_FT bins.
-                key = (round(lat / STEP), round(lon / STEP), int(alt // ALT_BIN_FT))
-                rec = cells.get(key)
-                if rec is not None:                 # already have this cell —
-                    if now_i:
-                        if now_i < rec[FIRST_SEEN]:
-                            rec[FIRST_SEEN] = now_i
-                        if now_i > rec[LAST_SEEN]:
-                            rec[LAST_SEEN] = now_i
+                merge_obs(cells, trig, lat, lon, _alt_ft(ac[1]), now_i)
+    return cells, n_chunks
+
+
+SEED_FRESH_SECS = 120    # store newer than this: no gap worth a history read
+
+
+class Poller:
+    """Background ingest: reads the live aircraft list on a timer and batches
+    what it finds into the store.
+
+    All of the poller's mutable state lives on the instance rather than in
+    module globals. That removes the reassign-a-global dance the flush used to
+    need, and turns what were dict keys into attributes, so a typo is an error
+    instead of quietly creating a new field nobody reads.
+
+    `pending` holds cells read but not yet written. Without a data volume there
+    is nowhere to write them to, so it simply keeps growing and *is* the
+    accumulated coverage, lost on restart, exactly as the no-persistence path
+    has always behaved.
+    """
+
+    STALE_FACTOR = 6     # /health flags the poller stale after this many missed reads
+
+    def __init__(self):
+        self.pending = {}
+        self.lock = threading.Lock()
+        self.started = 0.0      # when the thread came up
+        self.last_ok = 0.0      # epoch of the last successful read
+        self.last_flush = 0.0   # epoch of the last write to the store
+        self.polls = 0
+        self.errors = 0
+        self.aircraft = 0       # positioned aircraft in the last successful read
+        self.last_error = ""
+        self.seeded = 0
+        self._stop = threading.Event()
+        self._thread = None
+
+    # --- ingest ---------------------------------------------------------
+
+    def read_once(self):
+        """Read /data/aircraft.json once, merging every positioned aircraft into
+        `pending`. Returns the number of positioned aircraft seen.
+
+        A position in this file can be up to a minute old (readsb keeps an
+        aircraft listed for a while after its last position report), so the
+        observation time is `now - seen_pos`, not `now`. Recording a stale
+        position as heard-just-now would smear the timeline.
+        """
+        _, _, trig = receiver_trig()
+        doc = _fetch_json(ULTRAFEEDER + "/data/aircraft.json", timeout=10)
+        now = float(doc.get("now") or time.time())
+        n = 0
+        with self.lock:
+            for ac in doc.get("aircraft", []):
+                lat, lon = ac.get("lat"), ac.get("lon")
+                if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
                     continue
-                brg, dist = bearing_distance(sin1, cos1, rlat_r, rlon_r, lat, lon)
-                if dist > MAX_RANGE_NM:   # discard obvious bad positions
-                    continue
-                # Optional 4/3-earth LOS filter: an aircraft at `alt` can't be heard
-                # farther than 1.23 * (sqrt(alt) + sqrt(antenna_MSL)) * 1.15 nm.
-                # Weak decodes with bit-corrupted altitude fields land in low bins at
-                # physically impossible distances — this rejects them at ingest.
-                if LOS_FILTER and dist > _LOS_K * math.sqrt(max(0.0, alt)) + _LOS_ANT_TERM:
-                    continue
-                cells[key] = [round(brg, 1), round(dist, 2), int(alt), now_i, now_i]
+                # alt_baro is the field tar1090's chunks carry, and "ground"
+                # reads as 0 ft. Fall back to alt_geom so an aircraft reporting
+                # only geometric altitude isn't silently filed at ground level.
+                alt = ac.get("alt_baro")
+                if alt is None:
+                    alt = ac.get("alt_geom")
+                seen = ac.get("seen_pos")
+                t = now - seen if isinstance(seen, (int, float)) else now
+                merge_obs(self.pending, trig, lat, lon, _alt_ft(alt), int(t))
+                n += 1
+        return n
+
+    def seed(self):
+        """Fill the store from tar1090 history once at startup, so the map does
+        not begin blank. Returns cells seeded.
+
+        Polling only knows what it has watched. On a first run that means an
+        empty map, which reads as "the tool is broken", and after downtime it
+        means a permanent hole. One history read covers both.
+
+        Skipped when the store already holds recent data, so a quick restart
+        does not re-read history it already has.
+
+        Non-fatal by design. dump1090-fa and dump1090-mutability have no
+        /chunks/ endpoint at all and polling works perfectly well without a
+        seed, so a failure here is reported and ignored rather than blocking
+        ingest. That is what makes those decoders usable.
+        """
+        newest = 0
+        if STORE_PATH and os.path.exists(STORE_PATH):
+            try:
+                con = _store_conn()
+                try:
+                    newest = con.execute("SELECT max(last_seen) FROM cells").fetchone()[0] or 0
+                finally:
+                    con.close()
+            except Exception as e:
+                sys.stderr.write("seed: could not read store (%s)\n" % e)
+        gap = time.time() - newest
+        if newest and gap < SEED_FRESH_SECS:
+            print("seed: store is current (%.0fs old), skipping history read" % gap)
+            return 0
+        try:
+            _, _, trig = receiver_trig()
+            cells, n_chunks = read_chunks(trig)
+        except NoChunkHistory:
+            # Expected on dump1090-fa. Not a problem and not misconfiguration:
+            # the map just starts from now instead of from history.
+            print("seed: this feeder keeps no history, so the map starts from now "
+                  "and builds as aircraft are heard")
+            return 0
+        except Exception as e:
+            # Feeder not up yet, network blip, whatever it is: polling still
+            # works, it just starts thinner. Not worth failing over.
+            sys.stderr.write("seed: history read skipped (%s)\n" % e)
+            return 0
+        if not cells:
+            return 0
+        if STORE_PATH:
+            _store_upsert(cells)
+        else:
+            with self.lock:
+                _merge_cells(self.pending, cells)
+        why = "cold start" if not newest else "filling a %.0f min gap" % (gap / 60)
+        print("seed: %s, read %d chunks into %d cells of history"
+              % (why, n_chunks, len(cells)))
+        return len(cells)
+
+    # --- writing --------------------------------------------------------
+
+    def flush(self):
+        """Move the accumulated batch into the store, returning cells written.
+
+        A no-op without a store: there, `pending` IS the accumulated coverage,
+        so draining it would throw the map away. If the write fails the batch
+        goes back rather than being lost.
+        """
+        if not STORE_PATH:
+            return 0
+        with self.lock:
+            batch, self.pending = self.pending, {}
+        # Note this proceeds even when batch is empty. _store_upsert also applies
+        # retention, and a receiver that has gone quiet still needs its old cells
+        # aged out. Since /cone no longer does it, this is the only place it
+        # happens.
+        try:
+            _store_upsert(batch)
+        except Exception:
+            with self.lock:
+                _merge_cells(batch, self.pending)
+                self.pending = batch
+            raise
+        self.last_flush = time.time()
+        return len(batch)
+
+    def snapshot(self):
+        """The pending cells as a finished payload triple, for the no-store path
+        where they are the entire map.
+
+        Projects inside the lock rather than handing back a dict. dict() is a
+        shallow copy, so the caller would still be holding the *same* mutable
+        [brg, dist, alt, first_seen, last_seen] lists the poller keeps updating.
+        Nothing could corrupt (only the two timestamps are ever mutated, and a
+        list-item assignment is atomic), but walking them twice outside the lock
+        meant a point's first_seen could disagree with the t_min derived from it.
+        One pass under the lock is both consistent and cheaper.
+        """
+        with self.lock:
+            points, times = [], []
+            for r in self.pending.values():
+                points.append([r[BRG], r[DIST], r[ALT], r[FIRST_SEEN]])
+                if r[FIRST_SEEN]:
+                    times.append(r[FIRST_SEEN])
+        return points, (min(times) if times else 0), (max(times) if times else 0)
+
+    # --- lifecycle ------------------------------------------------------
+
+    def start(self):
+        self._thread = threading.Thread(target=self._loop, name="adsbvue-poll",
+                                        daemon=True)
+        self._thread.start()
+        print("ingest: polling %s/data/aircraft.json every %gs, flush every %gs"
+              % (ULTRAFEEDER, POLL_SECS, FLUSH_SECS))
+
+    def stop(self, timeout=10.0):
+        """Ask the thread to finish and wait for it. Returns True if it stopped.
+
+        Called before the final flush on shutdown. Without it the thread is a
+        daemon that keeps reading right up until the interpreter exits, so it
+        could add cells immediately *after* that last flush and lose them, up to
+        one poll interval's worth. Nothing corrupts either way (the drain is
+        atomic under the lock, and SQLite rolls back a transaction interrupted
+        at exit), but this makes shutdown deterministic rather than merely
+        survivable.
+        """
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout)
+            return not self._thread.is_alive()
+        return True
+
+    def _loop(self):
+        """Read on the poll interval, write on the slower flush interval.
+
+        Seeds first. That happens here rather than in main() so a slow or
+        unreachable feeder delays ingest only, never the web server coming up.
+        """
+        self.started = time.time()
+        try:
+            self.seeded = self.seed()
+        except Exception as e:
+            sys.stderr.write("seed failed: %s\n" % e)
+        next_flush = time.time() + FLUSH_SECS
+        while not self._stop.is_set():
+            t0 = time.time()
+            try:
+                self.aircraft = self.read_once()
+                self.polls += 1
+                self.last_ok = t0
+                self.last_error = ""
+            except Exception as e:
+                self.errors += 1
+                self.last_error = str(e)
+                sys.stderr.write("aircraft.json poll failed: %s\n" % e)
+            if time.time() >= next_flush:
+                try:
+                    n = self.flush()
+                    if n:
+                        sys.stderr.write("poll: flushed %d cells to the store\n" % n)
+                except Exception as e:
+                    sys.stderr.write("poll: store flush failed: %s\n" % e)
+                next_flush = time.time() + FLUSH_SECS
+            # Wait out the remainder of the interval so a slow read doesn't make
+            # the cadence drift longer and longer. Event.wait rather than sleep,
+            # so a shutdown does not have to sit through a whole interval.
+            self._stop.wait(max(0.5, POLL_SECS - (time.time() - t0)))
+
+    # --- reporting ------------------------------------------------------
+
+    def health(self):
+        """Poller status for /health."""
+        last_ok = self.last_ok
+        # Age is measured from the last good read, or from thread start if there
+        # has never been one, so a poller that has never succeeded still goes
+        # stale rather than looking healthy forever.
+        since = time.time() - (last_ok or self.started or time.time())
+        out = {
+            "poll_secs": POLL_SECS,
+            "flush_secs": FLUSH_SECS,
+            "last_poll": int(last_ok) if last_ok else None,
+            "last_poll_iso": (time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(last_ok))
+                              if last_ok else None),
+            "last_poll_age_secs": round(since, 1),
+            "poll_ok": since < POLL_SECS * self.STALE_FACTOR,
+            "polls": self.polls,
+            "poll_errors": self.errors,
+            "aircraft": self.aircraft,
+            "pending_cells": len(self.pending),
+            "last_flush": int(self.last_flush) if self.last_flush else None,
+        }
+        if self.last_error:
+            out["last_error"] = self.last_error
+        return out
+
+
+POLLER = Poller()
+
+
+def build_points():
+    """Build the cone payload: de-duplicated observations as
+    [bearing, distance_nm, altitude_ft, first_seen_epoch], plus per-bearing reach.
+
+    This is a read, not an ingest: the poller thread has already done the
+    recording. With ADSB_DATA_DIR set the payload is the whole accumulated
+    store; without it, whatever the poller is holding in memory.
+
+    It writes nothing. It used to call _store_upsert({}) here, whose only effect
+    with an empty batch was to redo the retention DELETE that the poller already
+    runs on every flush. That took the write lock for ~100 ms per page load at
+    1.5M rows, for nothing. With that gone /cone is a pure reader, and under WAL
+    a reader never contends with the poller's writes at all.
+
+    Still worth single-flighting behind _build_lock: a large store means
+    selecting a million-plus rows and then serialising and gzipping them, which
+    two concurrent requests should not both do.
+    """
+    rlat, rlon = receiver()
+    # Land the newest polls before reading, so an explicit ?refresh=true is
+    # never answered with data a whole flush interval stale.
+    POLLER.flush()
 
     if STORE_PATH:
-        points, t_min, t_max = _store_merge(cells)
+        points, t_min, t_max = _store_read_all()
     else:
-        points = [[r[BRG], r[DIST], r[ALT], r[FIRST_SEEN]] for r in cells.values()]
-        times = [r[FIRST_SEEN] for r in cells.values() if r[FIRST_SEEN]]
-        t_min = min(times) if times else 0
-        t_max = max(times) if times else 0
+        points, t_min, t_max = POLLER.snapshot()   # no store: pending IS the map
     cone_all, cone_low = build_cones(points)
     return {
         "ok": True,
@@ -459,8 +839,8 @@ def build_points():
         "border_color": BORDER_COLOR,       # appearance (client uses these)
         "home_border_color": HOME_BORDER_COLOR,
         "fog_density": FOG_DENSITY,
+        "map_behind_cone": MAP_BEHIND_CONE,
         "count": len(points),
-        "chunks": n_chunks,
         "t_min": t_min,          # earliest / latest first-seen time in the window
         "t_max": t_max,          # (epoch seconds) — drives the timeline scrubber
         "points": points,        # [bearing, dist_nm, alt_ft, first_seen_epoch]
@@ -469,50 +849,104 @@ def build_points():
     }
 
 
-def _fresh(snap, refresh):
-    return snap["json"] is not None and not refresh and (time.time() - snap["ts"]) < CACHE_SECS
+def _encode_payload(data):
+    """Frame the payload as: [uint32 little-endian meta-length][meta JSON][packed
+    point columns].
+
+    The points are sent as scaled-integer columns (a structure of arrays), not as
+    JSON text. The browser reads them straight into typed arrays instead of
+    parsing tens of megabytes of text, and the server builds them in about a
+    second instead of the eleven that json.dumps of a million-plus rows took.
+    Precision is kept far finer than the de-dup grid, so nothing is visibly lost:
+    bearing to 0.1 deg, distance to 0.1 nm, altitude to 25 ft, first-seen to 1 s.
+    Column order in the buffer is time (uint32), bearing, distance (uint16), then
+    altitude (int16); the client is told the scales and count in the meta header.
+    """
+    pts = data.pop("points")
+    n = len(pts)
+    t0 = data.get("t_min") or 0
+    tcol = array.array("I", (max(0, (p[3] or t0) - t0) for p in pts))               # seconds since t0
+    bcol = array.array("H", (min(65535, max(0, round(p[0] * 10))) for p in pts))    # bearing * 10
+    dcol = array.array("H", (min(65535, max(0, round(p[1] * 10))) for p in pts))    # distance nm * 10
+    acol = array.array("h", (max(-32768, min(32767, round(p[2] / 25))) for p in pts))  # altitude ft / 25
+    if sys.byteorder != "little":              # the wire format is little-endian
+        for col in (tcol, bcol, dcol, acol):
+            col.byteswap()
+    data["bin"] = {"n": n, "t0": t0, "brg_div": 10, "dist_div": 10, "alt_mul": 25,
+                   "order": "t_u32,brg_u16,dist_u16,alt_i16"}
+    meta = json.dumps(data).encode("utf-8")
+    return (struct.pack("<I", len(meta)) + meta
+            + tcol.tobytes() + bcol.tobytes() + dcol.tobytes() + acol.tobytes())
+
+
+def _rebuild_locked():
+    """Build, pack, and gzip the payload and swap it into the cache. The caller
+    must hold _build_lock so two rebuilds never overlap."""
+    data = build_points()
+    raw = _encode_payload(data)
+    del data
+    snap = {"ts": time.time(), "raw": raw, "gz": gzip.compress(raw, 6)}
+    with _cache_lock:
+        _cache.update(snap)
+    return snap
+
+
+def _rebuild_cache():
+    """Rebuild the cache from scratch. Used by the background refresher."""
+    with _build_lock:
+        return _rebuild_locked()
 
 
 def _ensure(refresh=False):
-    """Return a cache snapshot with the payload already serialized + gzipped.
+    """Return the current cached payload snapshot.
 
-    Serialization and compression happen once per rebuild here, not per request,
-    so hitting /cone from many tabs or a poller just re-sends the same bytes.
+    The background refresher (_cache_refresher) keeps the cache warm, so an
+    ordinary page load just reads the ready bytes and returns at once — it never
+    waits on a rebuild. Only a cold start (nothing cached yet) or an explicit
+    ?refresh=true rebuilds inline, and even then we re-check under the lock so we
+    don't repeat a rebuild the refresher just finished.
     """
     with _cache_lock:
         snap = dict(_cache)
-    if _fresh(snap, refresh):
+    if snap["raw"] is not None and not refresh:
         return snap
-    # Slow path: single-flight the rebuild. The expensive fetch/parse/serialize
-    # runs outside the cache lock, so concurrent cache-hit readers never block.
     with _build_lock:
         with _cache_lock:
             snap = dict(_cache)
-        if _fresh(snap, refresh):
+        if snap["raw"] is not None and not refresh:
             return snap
-        data = build_points()
-        raw = json.dumps(data).encode("utf-8")
-        snap = {"ts": time.time(), "data": data, "json": raw, "gz": gzip.compress(raw, 6)}
-        with _cache_lock:
-            _cache.update(snap)
-        return snap
+        return _rebuild_locked()
 
 
-def get_cone(refresh=False):
-    return _ensure(refresh)["data"]
+def _cache_refresher():
+    """Keep the /cone cache warm off the request path, so page loads never wait on
+    a rebuild. Builds once immediately (the first visitor gets a ready payload),
+    then rebuilds every CACHE_SECS. A failure — the feeder not being up yet at
+    startup, say — is logged and retried soon rather than left for a page load to
+    hit.
+    """
+    while True:
+        try:
+            _rebuild_cache()
+            time.sleep(CACHE_SECS)
+        except Exception as e:
+            sys.stderr.write("cache refresh failed: %s\n" % e)
+            time.sleep(5)
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
-    def _send(self, code, body, ctype, gz_ok=True, encoding=None):
+    def _send(self, code, body, ctype, gz_ok=True, encoding=None, cache_control=None):
         # encoding set => body is already compressed; just declare it. Otherwise
         # gzip on the fly for large-enough bodies the client accepts.
         if isinstance(body, str):
             body = body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         if encoding:
             self.send_header("Content-Encoding", encoding)
         elif gz_ok and "gzip" in self.headers.get("Accept-Encoding", "") and len(body) > GZIP_MIN_BYTES:
@@ -532,8 +966,13 @@ class Handler(BaseHTTPRequestHandler):
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
         try:
             if path in ("/", "/view", "/index.html"):
+                # no-cache so the browser always revalidates the page. Without it,
+                # after an update a browser can keep running an old index.html
+                # against the new server — and the page and the /cone data format
+                # have to match, so a stale page would fail to read the data.
                 with open(os.path.join(HERE, "index.html"), "rb") as fh:
-                    self._send(200, fh.read(), "text/html; charset=utf-8")
+                    self._send(200, fh.read(), "text/html; charset=utf-8",
+                               cache_control="no-cache")
             elif path in ("/adsbvue_favicon.png", "/favicon.ico", "/adsbvue_logo.png"):
                 name = "adsbvue_logo.png" if path.endswith("logo.png") else "adsbvue_favicon.png"
                 fp = os.path.join(HERE, name)
@@ -544,11 +983,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, b"", "application/octet-stream")
             elif path in ("/cone", "/data"):
                 snap = _ensure("refresh=true" in query)
-                # Pre-serialized + pre-gzipped at build time; just write the bytes.
+                # Packed binary (see _encode_payload), pre-gzipped at build time;
+                # just write the bytes.
                 if self._accepts_gzip():
-                    self._send(200, snap["gz"], "application/json", encoding="gzip")
+                    self._send(200, snap["gz"], "application/octet-stream", encoding="gzip")
                 else:
-                    self._send(200, snap["json"], "application/json", gz_ok=False)
+                    self._send(200, snap["raw"], "application/octet-stream", gz_ok=False)
             elif path == "/cities":
                 # Optional per-deployment city labels. A git-ignored
                 # cities.local.json (on the data volume if ADSB_DATA_DIR is set,
@@ -573,7 +1013,15 @@ class Handler(BaseHTTPRequestHandler):
                 # ADSB_HEYWHATSTHAT_ID is unset, never a 404.
                 self._send(200, _hwt_payload(), "application/json")
             elif path == "/health":
-                self._send(200, json.dumps({"ok": True}), "application/json")
+                # "ok" stays true whenever the process is serving, so existing
+                # container healthchecks behave as before. The separate
+                # "poll_ok" flag reports whether the ingest thread is actually
+                # still reading, with "last_poll" to see how recently. Those two
+                # are what tell an operator whether a dead map means a dead
+                # antenna or a dead reader.
+                body = {"ok": True}
+                body.update(POLLER.health())
+                self._send(200, json.dumps(body), "application/json")
             else:
                 self._send(404, json.dumps({"ok": False, "error": "not found"}),
                            "application/json")
@@ -606,11 +1054,28 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"ok": True, "path": out}), "application/json")
 
 
+def _on_term(signum, frame):
+    """Docker stops a container with SIGTERM, whose default action exits without
+    unwinding. Turn it into the same KeyboardInterrupt a Ctrl-C raises so the
+    shutdown path below runs and the pending poll batch reaches the store."""
+    raise KeyboardInterrupt
+
+
 def main():
     print("ADSb-Vue  ultrafeeder=%s  port=%d" % (ULTRAFEEDER, PORT))
+    old = os.environ.get("ADSB_INGEST", "").strip().lower()
+    if old:
+        # Silently ignoring it would be worse than saying so, especially for
+        # anyone who had it set to "chunks" and is now getting polling instead.
+        print("note: ADSB_INGEST=%s is obsolete and ignored. There is one ingest "
+              "path now: continuous polling of aircraft.json, filled in from "
+              "history at startup. You can remove the setting." % old)
     if STORE_PATH:
         print("persistence: accumulating coverage in %s" % STORE_PATH)
         seed_data_dir()
+    else:
+        print("note: no ADSB_DATA_DIR, so coverage is kept in memory only and is "
+              "lost on restart")
     cf = cities_file()
     if cf:
         print("cities: %s" % cf)
@@ -619,11 +1084,24 @@ def main():
         print("receiver: %.6f, %.6f" % (rlat, rlon))
     except Exception as e:
         print("warning: could not read receiver.json yet (%s)" % e)
+    POLLER.start()
+    # Build the /cone payload in the background and keep it warm, so page loads
+    # are served a ready copy instead of waiting on a rebuild.
+    threading.Thread(target=_cache_refresher, name="adsbvue-cache", daemon=True).start()
+    signal.signal(signal.SIGTERM, _on_term)
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print("listening on http://0.0.0.0:%d/  (view at /)" % PORT)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
+        try:
+            if not POLLER.stop():   # quiesce ingest before the final write
+                sys.stderr.write("poller did not stop in time; flushing anyway\n")
+            n = POLLER.flush()    # don't drop the last batch on a clean stop
+            if n:
+                print("flushed %d pending cells" % n)
+        except Exception as e:
+            sys.stderr.write("final flush failed: %s\n" % e)
         print("\nbye")
 
 

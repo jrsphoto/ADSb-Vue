@@ -215,9 +215,36 @@ visual is not built for that yet.
 Something used to work and now does not, or you are not getting the range
 or coverage you expected.
 
+> **Start at `/health`, before anything else.** It takes a second and it tells
+> you which half of the problem you have:
+>
+> ```
+> curl -s http://your-host:24556/health
+> ```
+>
+> ```json
+> {"ok": true, "poll_ok": true, "last_poll_age_secs": 4.1,
+>  "polls": 11570, "poll_errors": 0, "aircraft": 152}
+> ```
+>
+> - **`aircraft` at or near zero, but `poll_errors` at zero.** ADSb-Vue is
+>   reading your feeder fine and your feeder is hearing nothing. The problem is
+>   the antenna, coax, connectors, LNA power, or the SDR. Skip the rest of this
+>   section and go look at the RF chain.
+> - **`poll_errors` climbing, or `last_poll_age_secs` large.** ADSb-Vue cannot
+>   reach your feeder. Network, container, or the feeder itself. Nothing wrong
+>   with your antenna.
+> - **Both healthy but the map looks wrong.** Now the workflow below applies.
+>
+> This is worth doing first because the two failures look identical on the map
+> and have nothing to do with each other.
+
 ```mermaid
 flowchart TD
-  S[Symptom noticed] --> W{Is retention hiding it?}
+  S[Symptom noticed] --> H{"/health: aircraft > 0<br/>and no poll errors?"}
+  H -->|"No aircraft"| RF1[Feeder hears nothing:<br/>antenna, coax, LNA, SDR]
+  H -->|"Poll errors"| NET[Cannot reach feeder:<br/>network or container]
+  H -->|Yes| W{Is retention hiding it?}
   W -->|Yes| WA[Shorten retention or<br/>wipe store, re-collect 3-7 days]
   W -->|No| C[Compare Cone now vs<br/>Cone from healthy period]
   C --> Q{Envelope shrunk<br/>uniformly?}

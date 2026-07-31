@@ -8,9 +8,12 @@ A standalone **3D volumetric view of your ADS-B antenna reception**, driven by a
 Ultrafeeder / tar1090 receiver. Inspired by the "detection cone" viewer, but with
 switchable render modes and a true volumetric density render.
 
-It reads tar1090's rolling recent-history chunks (`/chunks/chunks.json` +
-`chunk_*.gz`), converts every aircraft observation to bearing / distance /
-altitude relative to the receiver, and serves a self-contained Three.js page.
+It converts every aircraft observation your receiver hears into bearing /
+distance / altitude relative to the antenna, and serves a self-contained
+Three.js page that renders the accumulated result. A background reader records
+continuously from your feeder's live aircraft list, so it works with
+dump1090-fa and dump1090-mutability as well as tar1090. See
+[How it records](#how-it-records).
 
 > For a practical guide to using it as a diagnostic tool — antenna placement,
 > reception troubleshooting, before/after comparisons — see
@@ -56,10 +59,10 @@ frame represents, a progress bar, and a slow camera orbit while recording.
 Press **Esc** to cancel a recording in progress. (Recording needs a Chromium-
 or Firefox-based browser.)
 
-How far back the window reaches is set by `ADSB_MAX_CHUNKS` — bigger is more
-history (`0` = everything the feeder retains). With **persistence** enabled
-(`ADSB_DATA_DIR`, see below), the timeline instead spans the whole accumulated
-store — up to `ADSB_RETAIN_DAYS` of coverage.
+With **persistence** enabled (`ADSB_DATA_DIR`, see below) the timeline spans the
+whole accumulated store, up to `ADSB_RETAIN_DAYS` of coverage. Without it, the
+window is whatever has been recorded since the last restart, starting from the
+history read in at boot (`ADSB_MAX_CHUNKS`).
 
 ## Run
 
@@ -82,7 +85,9 @@ environment variables:
 | `ADSB_WEB_PORT`    | `24556`              | Web-UI port to listen on (alias: `ADSB_PORT`). Not a data port. |
 | `ADSB_RECV_LAT`    | auto                 | Receiver latitude (else `/data/receiver.json`) |
 | `ADSB_RECV_LON`    | auto                 | Receiver longitude                        |
-| `ADSB_MAX_CHUNKS`  | `48`                 | Newest-first chunk cap (`0` = all history). With persistence on, `4` to `8` does the same job for a fraction of the CPU: see [choosing a value](docs/max_chunks.md) |
+| `ADSB_POLL_SECS`   | `5`                  | Seconds between reads of the live aircraft list |
+| `ADSB_FLUSH_SECS`  | `60`                 | Seconds between batched writes to the store |
+| `ADSB_MAX_CHUNKS`  | `48`                 | How much tar1090 history the one-time startup fill reads (`0` = all). A boot cost only, so a larger value is cheap: see [choosing a value](docs/max_chunks.md) |
 | `ADSB_CELL_NM`     | `1.5`                | De-dup grid cell size (nm)                |
 | `ADSB_ALT_BIN_FT`  | `1000`               | De-dup altitude bin (ft)                  |
 | `ADSB_MAX_RANGE_NM`| `400`                | Discard positions farther than this (nm)  |
@@ -95,6 +100,7 @@ environment variables:
 | `ADSB_BORDER_COLOR`| `#3f82b8`            | State border colour (hex)                 |
 | `ADSB_HOME_BORDER_COLOR`| `#6fd6c0`       | Home-state border colour (hex)            |
 | `ADSB_FOG_DENSITY` | `0.0012`             | Distance-fade density; `0` disables the fade |
+| `ADSB_MAP_BEHIND_CONE` | `false`          | Draw borders and city labels **behind** the coverage volume instead of over it. See [Map over or behind](#map-over-or-behind) |
 | `ADSB_DATA_DIR`    | *(unset)*            | Volume dir for long-term persistence (see below). Unset = no store. |
 | `ADSB_RETAIN_DAYS` | `30`                 | Store retention: drop cells not heard within N days (`0` = keep all) |
 | `ADSB_HEYWHATSTHAT_ID` | *(unset)*        | Your HeyWhatsThat panorama id — enables the HWT range-rings overlay |
@@ -103,13 +109,58 @@ environment variables:
 Reading is coarse on purpose: this is a coverage map, not a traffic replay.
 Lower `ADSB_CELL_NM` for finer detail.
 
-`ADSB_MAX_CHUNKS` is worth a moment's thought, since it drives most of
-ADSb-Vue's CPU and network cost. Without persistence, raising it (e.g. `0`)
-gives the fullest envelope at the cost of a bigger payload and a slower load.
-With **persistence** enabled the store holds your history, so a much lower
-value (`4` to `8`) does the same job for a fraction of the work. See
-[choosing a value for `ADSB_MAX_CHUNKS`](docs/max_chunks.md), especially if
-you are running on a Raspberry Pi.
+`ADSB_MAX_CHUNKS` only affects the one-time fill at startup, so it is cheap to
+set generously. `48` gives roughly six hours of history on a fresh install and
+the same amount of catch-up after downtime. See
+[choosing a value](docs/max_chunks.md).
+
+### Map over or behind
+
+Borders and city labels are normally drawn **over everything**, so they stay
+readable through the coverage volume. That is the long-standing look and it is
+still the default.
+
+It has one awkward side effect. Seen from a low side angle, the whole distant
+map squashes into a narrow band at the horizon, and that band lands across the
+middle of the cone, looking a bit like a mirage of the map floating inside it.
+The effect is strongest for coastal receivers, where there is far more coastline
+to pile into that band, and it gets no better with the distance fade on: fog
+dims the *colour* of those lines toward the background but cannot remove them,
+so they turn into dark smudges on the cone instead of disappearing.
+
+Set `ADSB_MAP_BEHIND_CONE=true` and the geography respects what is in front of
+it. Distant borders get tinted by the volume rather than stamped on top, and the
+distance fade dims them the way you would expect.
+
+The trade is that borders and labels are no longer guaranteed visible. Behind a
+solid cone they will be hidden. Try both and keep whichever you prefer.
+
+### How it records
+
+A background thread reads your feeder's live aircraft list
+(`/data/aircraft.json`) every `ADSB_POLL_SECS`, and records what it finds
+**whether or not anyone has the page open**. Results are batched to disk every
+`ADSB_FLUSH_SECS` rather than written on every read, which is easier on an SD
+card.
+
+Every decoder serves that endpoint, so this works with **dump1090-fa** and
+**dump1090-mutability** as well as tar1090.
+
+Live readings carry no history, so at startup ADSb-Vue reads tar1090's history
+files once to fill in the map rather than starting blank, and does the same
+after downtime to fill the gap. `ADSB_MAX_CHUNKS` sets how far back that
+reaches. On a decoder with no history files the step is skipped and the map
+simply starts from now.
+
+Pair this with `ADSB_DATA_DIR` so what it records survives a restart.
+
+> **Worth knowing:** this is *lighter* on your feeder than the old approach, not
+> heavier. Measured on a live receiver at a 1.0 nm cell size, reading every 5
+> seconds moved about 19 MB/hour against 33 MB/hour for the history-file path.
+
+If the map ever looks wrong, `/health` is the place to start. It reports whether
+the reader is still getting data and how long ago, which separates "the antenna
+has gone quiet" from "ADSb-Vue has stopped reading."
 
 ### Setting them
 
@@ -280,7 +331,9 @@ needed**, and it survives every update and container recreation. See
 - `GET /cone`    — observations as JSON (`?refresh=true` bypasses the cache)
 - `GET /cities`  — optional local city labels (your `cities.local.json`, else `[]`)
 - `GET /hwt`     — cached HeyWhatsThat horizon rings (`{}` when no id is set)
-- `GET /health`  — liveness
+- `GET /health`  : liveness, plus how long ago the last successful read was
+  (`last_poll_age_secs`), a `poll_ok` flag, and the aircraft count from that
+  read, so you can tell a quiet antenna from a stalled reader
 
 ## Run via Docker (recommended)
 

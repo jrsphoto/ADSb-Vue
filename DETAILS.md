@@ -13,14 +13,23 @@ The whole app is two files and no build step:
 
 ```mermaid
 flowchart LR
-    T["tar1090 / Ultrafeeder<br/>/chunks/*.gz"] -->|"parallel GET"| S["server.py<br/>parse · de-dup · cone"]
-    S -->|"/cone (gzip JSON)"| B["index.html<br/>Three.js render"]
+    A["feeder<br/>/data/aircraft.json"] -->|"read every ADSB_POLL_SECS"| P["poller thread<br/>merge_obs → pending"]
+    T["tar1090<br/>/chunks/*.gz"] -->|"once at startup"| P
+    P -->|"batch flush every ADSB_FLUSH_SECS"| D[("SQLite store")]
+    D -->|"/cone (gzip JSON)"| B["index.html<br/>Three.js render"]
     B -->|"voxel · cone · points"| U["browser (WebGL)"]
 ```
 
 ---
 
-## The data source: tar1090 chunks
+## The data sources
+
+Two, with different jobs. The live list is the ongoing source; history is read
+once at startup to avoid a blank map. Both feed the same grid through the same
+`merge_obs()`, so a cell means the same thing whichever produced it, which is
+what lets them share one store.
+
+### tar1090 chunks (startup fill only)
 
 readsb (inside Ultrafeeder) keeps a rolling window of **recent history** so that
 tar1090 can draw trails when you open the map. It exposes that as:
@@ -39,9 +48,39 @@ tar1090 can draw trails when you open the map. It exposes that as:
 Each `aircraft` entry is a compact positional array: `[hex, alt_ft, ground_speed,
 track, lat, lon, ...]`. We only use indices 1 (alt), 4 (lat), 5 (lon).
 
-We read *history* rather than the live `GET /data/aircraft.json` (which is only
-the currently-tracked aircraft) because a coverage map is fundamentally an
-*accumulation* — where have we ever heard something, and how far/low.
+History is self-contained: one read gives you hours of the past. It is also
+tar1090-only. dump1090-fa and dump1090-mutability have no `/chunks/` endpoint,
+which is why this is the optional half.
+
+### The live aircraft list (the ongoing source)
+
+`GET /data/aircraft.json` is the currently-tracked aircraft, updated about once a
+second, roughly 26 KB gzipped. Every decoder serves it, which is what makes
+dump1090-fa and dump1090-mutability usable.
+
+It carries no history at all, so reading it only works with something running
+continuously. That is the whole reason the poller thread exists: a coverage map
+is an *accumulation*, and you cannot accumulate from snapshots you never took.
+It is also why history still gets read once at boot.
+
+Two details that matter for correctness:
+
+- The observation time is **`now - seen_pos`**, not `now`. A position in this
+  file can be a minute old, because readsb keeps an aircraft listed for a while
+  after its last position report. Stamping those as heard-just-now would smear
+  the timeline.
+- Altitude is `alt_baro`, falling back to `alt_geom`. The chunk path only ever
+  has baro. The fallback fires on well under 1% of aircraft, and the alternative
+  is worse: without it an aircraft reporting only geometric altitude gets filed
+  at 0 ft, a fake ground contact that drags the coverage floor down.
+
+These were once selectable ingest modes. They are not any more: reading history
+on demand recorded **only at the moment a page loaded**, with no timer, so a tab
+left open all day recorded nothing. Measured over 16 hours on a live receiver,
+polling caught 93.8% of everything that path found plus another 366k cells it
+never saw, while being lighter on the feeder. Keeping it as a fallback would
+have meant keeping the defect, so history is now the startup fill and nothing
+else.
 
 ---
 
@@ -62,6 +101,7 @@ you'd expect precedence to work. `.env.example` documents every option.
 Config splits into two intentional categories in the source:
 
 - **Tunables** exposed as env vars: `ULTRAFEEDER`, `PORT`, `CACHE_SECS`,
+  `POLL_SECS`, `FLUSH_SECS`,
   `MAX_CHUNKS`, `CELL_NM`, `ALT_BIN_FT`, `MAX_RANGE_NM`, `LOW_ALT_FT`,
   `FETCH_WORKERS`, `ANTENNA_AGL_FT` (antenna mast height, ft — used only by the
   client's terrain model, passed through the payload), and the appearance
@@ -69,7 +109,63 @@ Config splits into two intentional categories in the source:
   the distance fade).
 - **Fixed constants** that are named but *not* configurable, because changing
   them would be wrong or meaningless: `BEARING_BINS = 361` (0–360° inclusive),
-  `GZIP_MIN_BYTES = 1400` (~one MTU), `NM_PER_DEG`, `FT_PER_NM`.
+  `GZIP_MIN_BYTES = 1400` (~one MTU), `NM_PER_DEG`, `FT_PER_NM`,
+  `SEED_FRESH_SECS = 120` (a store newer than this needs no startup fill),
+  `Poller.STALE_FACTOR = 6` (missed reads before `/health` flags it stale).
+
+Note that `PORT` is read as `ADSB_WEB_PORT` first and `ADSB_PORT` second. The
+Docker image deliberately pins **neither**: an image-level default for either
+name would outrank the *other* name set by the user, and their server would
+listen somewhere they never asked for. `server.py` defaults to 24556 on its own.
+
+### The poller (`class Poller`)
+
+One instance, `POLLER`, owning a single daemon thread. All of the ingest state
+lives on it rather than in module globals: `pending`, its lock, and the counters
+`/health` reports. It is the only hand-written class in the file besides the
+stdlib-mandated `Handler`, which is deliberate, because it is the only part of
+the server with mutable state that a background thread and request threads both
+touch.
+
+`POLLER.start()` launches `_loop()`, which does three things in order.
+
+- **`seed()`** runs first, once. It fills the store from history so the map does
+  not begin blank, and refills after downtime. Skipped when the store already
+  holds data newer than `SEED_FRESH_SECS`, so a quick restart costs nothing.
+  Failure is reported and ignored, which is exactly what makes chunk-less
+  decoders work. It runs *here* rather than in `main()` so a slow or unreachable
+  feeder delays ingest only, never the web server binding its port.
+
+- **`read_once()`** reads `/data/aircraft.json` and merges each positioned
+  aircraft into `pending`, the cells not yet written.
+
+- **`flush()`** moves `pending` into SQLite every `FLUSH_SECS`. Batching is the
+  point: reading every 5 s but writing every 60 s is roughly 12× fewer
+  transactions, which matters for SD-card wear on a Pi. An unclean shutdown
+  loses at most one flush interval, which is nothing for a map built over days.
+  A failed write puts the batch back rather than dropping it.
+
+  Without `ADSB_DATA_DIR` there is nowhere to flush to, so `pending` simply
+  keeps growing and *is* the accumulated coverage, lost on restart, matching how
+  the no-persistence path has always behaved. `snapshot()` is how `/cone` reads
+  it in that case.
+
+The instance shape is what removes the `global` statement the flush used to
+need, and turns what were string dict keys into attributes, so a typo is an
+error rather than a silently-created field nobody reads.
+
+`SIGTERM` is converted to `KeyboardInterrupt` so that `docker stop` runs the same
+shutdown as Ctrl-C instead of dropping the last batch. That shutdown is
+`POLLER.stop()` then `POLLER.flush()`, in that order: `stop()` sets an
+`Event` and joins the thread, so ingest has genuinely quiesced before the final
+write. Without it the thread keeps reading right up until the interpreter exits
+and could add cells *after* the last flush, losing up to one poll interval. The
+loop waits on that same `Event` rather than sleeping, so shutdown does not have
+to sit through a whole interval: measured at 0.01 s to exit with
+`ADSB_POLL_SECS=30`.
+
+`/cone` flushes before reading, so an explicit `?refresh=true` is never answered
+with data a flush interval stale.
 
 ### The build pipeline
 
@@ -138,6 +234,31 @@ just writes pre-baked bytes — no per-request `json.dumps` over the whole point
 list, no per-request compression. `CACHE_SECS` controls staleness;
 `?refresh=true` forces a rebuild.
 
+**The parsed dict is deliberately not cached, and the reference is dropped as
+soon as it has been serialized.** A point is `[brg, dist, alt, first_seen]`,
+which costs about 196 bytes once you count the list object and the four boxed
+numbers, so at 1.5M cells the point list alone is ~310 MB of Python objects.
+Keeping it was pure waste: the only reader was a `get_cone()` helper with no
+callers. Measured against a real 1.59M-cell store, dropping it took resident
+memory from **472 MB to 115 MB** for a byte-identical payload.
+
+The *peak* during a rebuild is unchanged at ~490 MB, because the list still has
+to be built and serialized before it can be thrown away. That is the number to
+size a small Pi against, not the resting figure.
+
+**Only one thread ever writes to SQLite: the poller.** `build_points()` is a
+pure reader. It used to call `_store_upsert({})`, which with an empty batch did
+nothing except redo the retention `DELETE`, and that is a full table scan taking
+about 100 ms at 1.5M rows while holding the write lock. Doing that on every page
+load was pointless work and the only source of writer-versus-writer contention.
+Under WAL a reader never blocks the writer, so with it gone `/cone` and the
+poller do not contend at all.
+
+The consequence is that `Poller.flush()` must run even when nothing is pending,
+because `_store_upsert()` is also what applies retention, and a receiver that has
+gone quiet still needs its old cells aged out. Connections take an explicit
+30 s busy timeout rather than relying on the 5 s default.
+
 ### HTTP layer
 
 A single `BaseHTTPRequestHandler`. `_send()` centralizes response writing and
@@ -151,7 +272,7 @@ the client accepts it and the body exceeds `GZIP_MIN_BYTES`.
 | `GET /cone` (`/data`) | the observation payload (`?refresh=true` bypasses cache) |
 | `GET /cities` | optional per-deployment city labels: `cities.local.json` if present next to `server.py`, else `[]` (never 404 → no console noise; invalid JSON → `[]`) |
 | `GET /hwt` | HeyWhatsThat horizon rings for `ADSB_HEYWHATSTHAT_ID`, fetched from their API once and cached (in memory + on the data volume); `{}` when unset or on failure (10-min retry backoff) |
-| `GET /health` | liveness |
+| `GET /health` | liveness, plus `last_poll`, `last_poll_age_secs`, `poll_ok`, `polls`, `poll_errors`, `aircraft`, `pending_cells` |
 | `GET /adsbvue_favicon.png`, `/favicon.ico`, `/adsbvue_logo.png` | static assets |
 | `POST /_save?name=…` | debug-only: writes a posted canvas data-URL to `/tmp` (used for headless screenshot verification; harmless, unused by the app) |
 
@@ -331,6 +452,7 @@ screenshot tooling struggles with a continuously-animating WebGL canvas.
   `THREE.Group`, wire it into `rebuild()` and a mode button.
 - New analysis over the data: it's all in `build_points()` / `build_cones()`;
   add fields to the payload dict and read them in the page's `updateMeta()`.
-- Different receiver network: everything keys off `/data/receiver.json` and the
-  `/chunks/` endpoint, so any tar1090-compatible source works by pointing
-  `ADSB_ULTRAFEEDER` at it.
+- Different receiver network: everything keys off `/data/receiver.json` and
+  `/data/aircraft.json`, so point `ADSB_ULTRAFEEDER` at it and it works. Only
+  the optional startup fill wants tar1090's `/chunks/`, and its absence just
+  means the map starts from now.
