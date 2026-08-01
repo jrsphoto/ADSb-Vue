@@ -363,6 +363,15 @@ Update with `docker compose pull && docker compose up -d`. (With a prebuilt
 image your `cities.local.json` lives on the `data/` volume — see the
 persistence section above.)
 
+**Prefer a single command (no compose file)?** The same thing as a `docker run`:
+
+    docker run -d --name adsbvue --network host --restart unless-stopped \
+      -e ADSB_DATA_DIR=/data -v "$PWD/data:/data" \
+      ghcr.io/jrsphoto/adsbvue:latest
+
+To update it later: `docker pull ghcr.io/jrsphoto/adsbvue:latest`, then
+`docker rm -f adsbvue` and run the command again.
+
 **Build from source.** From a clone of this repo:
 
     docker compose up -d --build
@@ -395,18 +404,6 @@ to `…/adsbvue/cone`.
 **Updating:** pull the latest code and rebuild —
 
     git pull && docker compose up -d --build
-
-## Run as a service
-
-See `adsbvue.service` (a systemd **user** unit — adjust the path and
-`ADSB_ULTRAFEEDER` inside it first):
-
-    cp adsbvue.service ~/.config/systemd/user/
-    systemctl --user daemon-reload
-    systemctl --user enable --now adsbvue
-    loginctl enable-linger "$USER"   # keep it running across logout
-
-It can run on any host that can reach your Ultrafeeder.
 
 ## Privacy
 
