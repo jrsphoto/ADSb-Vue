@@ -53,14 +53,15 @@ so every worktree finds it.
 
 ## Deploy shape
 
-Deployment is the Docker container only (currently the `ingest-poll` image);
-there is no systemd path, and no `adsbvue.service` unit. Do not add one.
+Deployment is the Docker container only (`ghcr.io/jrsphoto/adsbvue:latest`, built
+from `main`); there is no systemd path, and no `adsbvue.service` unit. Do not add
+one.
 
 Deploy is a registry pull, not a file copy. CI builds the image on push to
 GitHub; on skyscanner, `cd /opt/adsbvue && docker compose pull && docker compose
-up -d`. Watchtower auto-update is DISABLED on the box (a compose label) while it
-runs a branch image; when it returns to `:latest`, remove that label or it stops
-auto-updating.
+up -d`. If a `com.centurylinklabs.watchtower.enable=false` label is present in
+`/opt/adsbvue/docker-compose.yml`, it was added to pin a branch image; remove it
+while on `:latest` so Watchtower auto-updates resume.
 
 ## Conventions that differ from the defaults
 
