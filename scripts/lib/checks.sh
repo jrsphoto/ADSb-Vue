@@ -144,3 +144,27 @@ summary() {
   fi
   return 0
 }
+# check_clock <label> <user@host> <max_offset_seconds>
+check_clock() {
+  local label="$1" target="$2" max="$3" out offset src
+  out=$(ssh $SSH_OPTS "$target" 'chronyc tracking' 2>/dev/null) || { _fail "$label" "chronyc unreachable on $target"; return; }
+  src=$(awk -F': ' '/Reference ID/ {print $2}' <<<"$out")
+  offset=$(awk -F': ' '/Last offset/ {print $2}' <<<"$out" | awk '{print $1}')
+  offset=${offset#[-+]}
+  if awk "BEGIN{exit !($offset < $max)}"; then
+    _pass "$label" "offset ${offset}s, ref $src"
+  else
+    _fail "$label" "offset ${offset}s exceeds ${max}s, ref $src"
+  fi
+}
+# check_ntp_source <label> <user@host> <expected_source>
+check_ntp_source() {
+  local label="$1" target="$2" want="$3" out line
+  out=$(ssh $SSH_OPTS "$target" 'chronyc sources' 2>/dev/null) || { _fail "$label" "chronyc unreachable on $target"; return; }
+  line=$(grep -i -- "$want" <<<"$out") || { _fail "$label" "$want not in chrony sources"; return; }
+  case "$line" in
+    '^*'*) _pass "$label" "synced to $want" ;;
+    '^+'*) _pass "$label" "$want present as fallback" ;;
+    *)     _fail "$label" "$want present but not selected: $(awk '{print $1, $2}' <<<"$line")" ;;
+  esac
+}
